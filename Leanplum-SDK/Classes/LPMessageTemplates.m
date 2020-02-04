@@ -37,9 +37,6 @@
     ([[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"]))
 
 
-static NSString *DEFAULTS_ASKED_TO_PUSH = @"__Leanplum_asked_to_push";
-static NSString *DEFAULTS_LEANPLUM_ENABLED_PUSH = @"__Leanplum_enabled_push";
-
 #pragma mark Helper View Class
 @interface LPHitView : UIView
 @property (strong, nonatomic) void (^callback)(void);
@@ -68,7 +65,6 @@ static NSString *DEFAULTS_LEANPLUM_ENABLED_PUSH = @"__Leanplum_enabled_push";
 @end
 
 @implementation LPMessageTemplatesClass {
-    NSMutableArray *_contexts;
     UIView *_popupView;
     UIImageView *_popupBackground;
     UILabel *_titleLabel;
