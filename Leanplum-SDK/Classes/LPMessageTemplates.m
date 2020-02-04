@@ -136,9 +136,6 @@
 #define LOG_LP_MESSAGE_EXCEPTION NSLog(@"Leanplum: Error in message template %@: %@\n%@", \
 context.actionName, exception, [exception callStackSymbols])
 
-static NSString *DEFAULTS_ASKED_TO_PUSH = @"__Leanplum_asked_to_push";
-static NSString *DEFAULTS_LEANPLUM_ENABLED_PUSH = @"__Leanplum_enabled_push";
-
 #pragma mark Helper View Class
 @interface LPHitView : UIView
 @property (strong, nonatomic) void (^callback)(void);
@@ -167,7 +164,6 @@ static NSString *DEFAULTS_LEANPLUM_ENABLED_PUSH = @"__Leanplum_enabled_push";
 @end
 
 @implementation LPMessageTemplatesClass {
-    NSMutableArray *_contexts;
     UIView *_popupView;
     UIImageView *_popupBackground;
     UILabel *_titleLabel;

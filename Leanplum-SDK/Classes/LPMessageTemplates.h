@@ -32,11 +32,26 @@
 #import <WebKit/WebKit.h>
 #import "Leanplum.h"
 
-@interface LPMessageTemplatesClass : NSObject <UIAlertViewDelegate, WKNavigationDelegate>
+static NSString *DEFAULTS_ASKED_TO_PUSH = @"__Leanplum_asked_to_push";
+static NSString *DEFAULTS_LEANPLUM_ENABLED_PUSH = @"__Leanplum_enabled_push";
+
+@interface LPMessageTemplatesClass : NSObject <UIAlertViewDelegate, WKNavigationDelegate> {
+    NSMutableArray *_contexts;
+}
 
 + (LPMessageTemplatesClass *)sharedTemplates;
++ (UIViewController *)visibleViewController;
++ (NSString *)urlEncodedStringFromString:(NSString *)urlString;
 
 - (void)disableAskToAsk;
 - (void)refreshPushPermissions;
+- (void)alertDismissedWithButtonIndex:(NSInteger)buttonIndex;
+- (void)enableSystemPush;
+- (BOOL)isPushEnabled;
+- (void)closePopupWithAnimation:(BOOL)animated;
+- (void)showPopup;
+- (BOOL)hasAlternateIcon;
+- (void)appStorePrompt;
+- (void)setAlternateIconWithFilename:(NSString *)filename;
 
 @end
