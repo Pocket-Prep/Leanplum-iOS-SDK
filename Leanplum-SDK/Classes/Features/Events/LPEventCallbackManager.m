@@ -23,7 +23,6 @@
 //  under the License.
 
 #import "LPEventCallbackManager.h"
-#import "LeanplumRequest.h"
 #import "LPEventCallback.h"
 #import "LPResponse.h"
 #import "LPCountAggregator.h"
@@ -82,13 +81,13 @@
 
             // If index is in range, execute and remove it.
             // If not, requests are in the future. Update the index.
-            [callbackMap removeObjectForKey:indexObject];
             if (index >= requests.count) {
                 index -= requests.count;
                 updatedCallbackMap[@(index)] = eventCallback;
             } else if (eventCallback.responseBlock) {
                 activeResponseMap[indexObject] = [eventCallback.responseBlock copy];
             }
+            [callbackMap removeObjectForKey:indexObject];
         }
         [callbackMap addEntriesFromDictionary:updatedCallbackMap];
 
@@ -119,7 +118,7 @@
             if (responseError) {
                 errorMessage = [NSString stringWithFormat:@"API error: %@", errorMessage];
             }
-            NSLog(@"Leanplum: %@", errorMessage);
+            LPLog(LPError, errorMessage);
 
             LPEventCallback *callback = callbackMap[@(i)];
             if (callback) {

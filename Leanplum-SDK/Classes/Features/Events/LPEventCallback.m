@@ -23,7 +23,6 @@
 //  under the License.
 
 #import "LPEventCallback.h"
-#import "LeanplumRequest.h"
 #import "LPResponse.h"
 #import "LPCountAggregator.h"
 
@@ -57,8 +56,13 @@
     
     // Ensure all callbacks are on main thread.
     if (![NSThread isMainThread]) {
+        // hold the reference to self until block is executed
+        __strong __typeof__(self) strongSelf = self;
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.responseBlock(operation, response);
+            __typeof__(self) weakSelf = strongSelf;
+            if (weakSelf) {
+                weakSelf.responseBlock(operation, response);
+            }
         });
         return;
     }
@@ -74,8 +78,13 @@
     
     // Ensure all callbacks are on main thread.
     if (![NSThread isMainThread]) {
+        // hold the reference to self until block is executed
+        __strong __typeof__(self) strongSelf = self;
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.errorBlock(error);
+            __typeof__(self) weakSelf = strongSelf;
+            if (weakSelf) {
+                weakSelf.errorBlock(error);
+            }
         });
         return;
     }

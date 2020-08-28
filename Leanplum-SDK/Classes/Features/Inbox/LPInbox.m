@@ -83,7 +83,7 @@ static NSObject *updatingLock;
 
         NSArray *messageIdParts = [messageId componentsSeparatedByString:@"##"];
         if ([messageIdParts count] != 2) {
-            NSLog(@"Leanplum: Malformed inbox messageId: %@", messageId);
+            LPLog(LPInfo, @"Malformed inbox messageId: %@", messageId);
             return nil;
         }
         _context = [LPActionContext actionContextWithName:actionArgs[LP_VALUE_ACTION_ARG]
@@ -145,7 +145,7 @@ static NSObject *updatingLock;
     }
 
     if (![LPConstantsState sharedState].isInboxImagePrefetchingEnabled) {
-        LPLog(LPWarning, @"Inbox Message image path is null "
+        LPLog(LPInfo, @"Inbox Message image path is null "
               "because you're calling [Leanplum disableImagePrefetching]. "
               "Consider using imageURL method or remove disableImagePrefetching.");
     }
@@ -179,7 +179,7 @@ static NSObject *updatingLock;
     return nil;
 }
 
-- (void)read
+- (void)markAsRead
 {
     if (![self isRead]) {
         [self setIsRead:YES];
@@ -190,12 +190,15 @@ static NSObject *updatingLock;
         RETURN_IF_NOOP;
         LP_TRY
         NSDictionary *params = @{LP_PARAM_INBOX_MESSAGE_ID: [self messageId]};
-        LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                        initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-        id<LPRequesting> request = [reqFactory markNewsfeedMessageAsReadWithParams:params];
+        LPRequest *request = [LPRequestFactory markNewsfeedMessageAsReadWithParams:params];
         [[LPRequestSender sharedInstance] send:request];
         LP_END_TRY
     }
+}
+
+- (void)read
+{
+    [self markAsRead];
     
     LP_TRY
     [[self context] runTrackedActionNamed:LP_VALUE_DEFAULT_PUSH_ACTION];
@@ -316,7 +319,7 @@ static NSObject *updatingLock;
             }
         }
     } @catch (NSException *exception) {
-        NSLog(@"Leanplum: Could not load the Inbox data: %@", exception);
+        LPLog(LPError, @"Could not load the Inbox data: %@", exception);
     }
 }
 
@@ -371,9 +374,7 @@ static NSObject *updatingLock;
     [[LPInbox sharedState] updateMessages:_messages unreadCount:unreadCount];
     
     NSDictionary *params = @{LP_PARAM_INBOX_MESSAGE_ID:messageId};
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory deleteNewsfeedMessageWithParams:params];
+    LPRequest *request = [LPRequestFactory deleteNewsfeedMessageWithParams:params];
     [[LPRequestSender sharedInstance] send:request];
     LP_END_TRY
 }
@@ -418,9 +419,7 @@ static NSObject *updatingLock;
 {
     RETURN_IF_NOOP;
     LP_TRY
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory getNewsfeedMessagesWithParams:nil];
+    LPRequest *request = [LPRequestFactory getNewsfeedMessagesWithParams:nil];
     [request onResponse:^(id<LPNetworkOperationProtocol> operation, NSDictionary *response) {
         LP_TRY
         NSDictionary *messagesDict = response[LP_KEY_INBOX_MESSAGES];
@@ -593,70 +592,6 @@ static NSObject *updatingLock;
     LP_TRY
     [LPConstantsState sharedState].isInboxImagePrefetchingEnabled = NO;
     LP_END_TRY
-}
-
-@end
-
-#pragma mark - LPNewsfeed implementation for backwards compatibility
-
-@implementation LPNewsfeedMessage
-
-- (id)init
-{
-    return [super init];
-}
-
-@end
-
-@implementation LPNewsfeed
-
-+ (LPNewsfeed *)sharedState {
-    static LPNewsfeed *sharedNewsfeed = nil;
-    static dispatch_once_t onceNewsfeedToken;
-    dispatch_once(&onceNewsfeedToken, ^{
-        sharedNewsfeed = [self new];
-    });
-    return sharedNewsfeed;
-}
-
-- (id)init {
-    return [super init];
-}
-
-- (NSUInteger)count {
-    return [[LPInbox sharedState] count];
-}
-
-- (NSUInteger)unreadCount {
-    return [[LPInbox sharedState] unreadCount];
-}
-
-- (NSArray *)messagesIds {
-    return [[LPInbox sharedState] messagesIds];
-}
-
-- (NSArray *)allMessages {
-    return [[LPInbox sharedState] allMessages];
-}
-
-- (NSArray *)unreadMessages {
-    return [[LPInbox sharedState] unreadMessages];
-}
-
-- (void)onChanged:(LeanplumNewsfeedChangedBlock)block {
-    [[LPInbox sharedState] onChanged:block];
-}
-
-- (LPNewsfeedMessage *)messageForId:(NSString *)messageId {
-    return (LPNewsfeedMessage *)[[LPInbox sharedState] messageForId:messageId];
-}
-
-- (void)addNewsfeedChangedResponder:(id)responder withSelector:(SEL)selector {
-    [[LPInbox sharedState]  addInboxChangedResponder:responder withSelector:selector];
-}
-
-- (void)removeNewsfeedChangedResponder:(id)responder withSelector:(SEL)selector {
-    [[LPInbox sharedState]  removeInboxChangedResponder:responder withSelector:selector];
 }
 
 @end

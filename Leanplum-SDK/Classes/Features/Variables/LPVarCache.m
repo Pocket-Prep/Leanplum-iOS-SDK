@@ -26,7 +26,6 @@
 #import "LPFileManager.h"
 #import "LPVarCache.h"
 #import "LeanplumInternal.h"
-#import "LeanplumRequest.h"
 #import "LPActionManager.h"
 #import "FileMD5Hash.h"
 #import "LPKeychainWrapper.h"
@@ -41,28 +40,24 @@
 
 @interface LPVarCache()
 @property (strong, nonatomic) NSRegularExpression *varNameRegex;
-@property (strong, nonatomic) NSMutableDictionary *vars;
-@property (strong, nonatomic) NSMutableDictionary *filesToInspect;
-@property (strong, nonatomic) NSMutableDictionary *fileAttributes;
-@property (strong, nonatomic) NSMutableDictionary *valuesFromClient;
-@property (readwrite, nonatomic) NSMutableDictionary *defaultKinds;
-@property (strong, nonatomic) NSMutableDictionary *actionDefinitions;
-@property (strong, nonatomic) NSDictionary *diffs;
-@property (strong, nonatomic) NSDictionary *messageDiffs;
-@property (strong, nonatomic) NSMutableArray *updateRulesDiffs;
-@property (strong, nonatomic) NSArray *eventRulesDiffs;
-@property (strong, nonatomic) NSDictionary *devModeValuesFromServer;
-@property (strong, nonatomic) NSDictionary *devModeFileAttributesFromServer;
-@property (strong, nonatomic) NSDictionary *devModeActionDefinitionsFromServer;
-@property (strong, nonatomic) NSArray *variants;
-@property (strong, nonatomic) NSDictionary *variantDebugInfo;
-@property (strong, nonatomic) NSMutableDictionary *userAttributes;
-@property (strong, nonatomic) NSDictionary *regions;
+@property (strong, nonatomic) NSMutableDictionary<NSString *, id> *vars;
+@property (strong, nonatomic) NSMutableDictionary<NSString *, id> *filesToInspect;
+@property (strong, nonatomic) NSMutableDictionary<NSString *, id> *fileAttributes;
+@property (strong, nonatomic) NSMutableDictionary<NSString *, id> *valuesFromClient;
+@property (readwrite, nonatomic) NSMutableDictionary<NSString *, id> *defaultKinds;
+@property (strong, nonatomic) NSMutableDictionary<NSString *, id> *actionDefinitions;
+@property (strong, nonatomic) NSDictionary<NSString *, id> *diffs;
+@property (strong, nonatomic) NSDictionary<NSString *, id> *messageDiffs;
+@property (strong, nonatomic) NSDictionary<NSString *, id> *devModeValuesFromServer;
+@property (strong, nonatomic) NSDictionary<NSString *, id> *devModeFileAttributesFromServer;
+@property (strong, nonatomic) NSDictionary<NSString *, id> *devModeActionDefinitionsFromServer;
+@property (strong, nonatomic) NSArray<NSString *> *variants;
+@property (strong, nonatomic) NSDictionary<NSString *, id> *variantDebugInfo;
+@property (strong, nonatomic) NSMutableDictionary<NSString *, id> *userAttributes;
+@property (strong, nonatomic) NSDictionary<NSString *, id> *regions;
 @property (strong, nonatomic) CacheUpdateBlock updateBlock;
-@property (strong, nonatomic) CacheUpdateBlock interfaceUpdateBlock;
-@property (strong, nonatomic) CacheUpdateBlock eventsUpdateBlock;
 @property (assign, nonatomic) BOOL hasReceivedDiffs;
-@property (strong, nonatomic) NSMutableDictionary *messages;
+@property (strong, nonatomic) NSMutableDictionary<NSString *, id> *messages;
 @property (strong, nonatomic) id merged;
 @property (assign, nonatomic) BOOL silent;
 @property (assign, nonatomic) int contentVersion;
@@ -103,8 +98,6 @@ static dispatch_once_t leanplum_onceToken;
     self.fileAttributes = [NSMutableDictionary dictionary];
     self.valuesFromClient = [NSMutableDictionary dictionary];
     self.diffs = [NSMutableDictionary dictionary];
-    self.updateRulesDiffs = [NSMutableArray array];
-    self.eventRulesDiffs = [NSArray array];
     self.defaultKinds = [NSMutableDictionary dictionary];
     self.actionDefinitions = [NSMutableDictionary dictionary];
     self.hasReceivedDiffs = NO;
@@ -375,8 +368,6 @@ static dispatch_once_t leanplum_onceToken;
         NSData *encryptedDiffs = [[NSUserDefaults standardUserDefaults] dataForKey:LEANPLUM_DEFAULTS_VARIABLES_KEY];
         NSDictionary *diffs;
         NSDictionary *messages;
-        NSArray *updateRules;
-        NSArray *eventRules;
         NSArray *variants;
         NSDictionary *variantDebugInfo;
         NSDictionary *regions;
@@ -389,8 +380,6 @@ static dispatch_once_t leanplum_onceToken;
             NSKeyedUnarchiver *archiver = [[NSKeyedUnarchiver alloc] initForReadingWithData:diffsData];
             diffs = (NSDictionary *) [archiver decodeObjectForKey:LEANPLUM_DEFAULTS_VARIABLES_KEY];
             messages = (NSDictionary *) [archiver decodeObjectForKey:LEANPLUM_DEFAULTS_MESSAGES_KEY];
-            updateRules = (NSArray *)[archiver decodeObjectForKey:LEANPLUM_DEFAULTS_UPDATE_RULES_KEY];
-            eventRules = (NSArray *)[archiver decodeObjectForKey:LEANPLUM_DEFAULTS_EVENT_RULES_KEY];
             regions = (NSDictionary *)[archiver decodeObjectForKey:LP_KEY_REGIONS];
             variants = (NSArray *)[archiver decodeObjectForKey:LP_KEY_VARIANTS];
             variantDebugInfo = (NSDictionary *)[archiver decodeObjectForKey:LP_KEY_VARIANT_DEBUG_INFO];
@@ -411,13 +400,11 @@ static dispatch_once_t leanplum_onceToken;
 
         [self applyVariableDiffs:diffs
                         messages:messages
-                     updateRules:updateRules
-                      eventRules:eventRules
                         variants:variants
                          regions:regions
                 variantDebugInfo:variantDebugInfo];
     } @catch (NSException *exception) {
-        NSLog(@"Leanplum: Could not load variable diffs: %@", exception);
+        LPLog(LPError, @"Could not load variable diffs: %@", exception);
     }
     [self userAttributes];
     
@@ -436,8 +423,6 @@ static dispatch_once_t leanplum_onceToken;
         NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initForWritingWithMutableData:diffsData];
         [archiver encodeObject:self.diffs forKey:LEANPLUM_DEFAULTS_VARIABLES_KEY];
         [archiver encodeObject:self.messages forKey:LEANPLUM_DEFAULTS_MESSAGES_KEY];
-        [archiver encodeObject:self.updateRulesDiffs forKey:LEANPLUM_DEFAULTS_UPDATE_RULES_KEY];
-        [archiver encodeObject:self.eventRulesDiffs forKey:LEANPLUM_DEFAULTS_EVENT_RULES_KEY];
         [archiver encodeObject:self.variants forKey:LP_KEY_VARIANTS];
         [archiver encodeObject:self.variantDebugInfo forKey:LP_KEY_VARIANT_DEBUG_INFO];
         [archiver encodeObject:self.regions forKey:LP_KEY_REGIONS];
@@ -462,8 +447,6 @@ static dispatch_once_t leanplum_onceToken;
 
 - (void)applyVariableDiffs:(NSDictionary *)diffs_
                   messages:(NSDictionary *)messages_
-               updateRules:(NSArray *)updateRules_
-                eventRules:(NSArray *)eventRules_
                   variants:(NSArray *)variants_
                    regions:(NSDictionary *)regions_
           variantDebugInfo:(NSDictionary *)variantDebugInfo_
@@ -514,9 +497,9 @@ static dispatch_once_t leanplum_onceToken;
             if (!self.regionInitBlock) {
                     if ([LPConstantsState sharedState].isDevelopmentModeEnabled) {
                         if ([regions_ count] > 0) {
-                            NSLog(@"Leanplum: Regions have been defined in dashboard, but the app is not built to handle them.");
-                            NSLog(@"Leanplum: Add LeanplumLocation.framework or LeanplumBeacon.framework to Build Settings -> Link Binary With Libraries.");
-                            NSLog(@"Leanplum: Disregard warning if there are no plans to utilize iBeacon or Geofencing within the app");
+                            LPLog(LPInfo, @"Regions have been defined in dashboard, but the app is not built to handle them.");
+                            LPLog(LPInfo, @"Add LeanplumLocation.framework or LeanplumBeacon.framework to Build Settings -> Link Binary With Libraries.");
+                            LPLog(LPInfo, @"Disregard warning if there are no plans to utilize iBeacon or Geofencing within the app");
                         }
                     }
             } else {
@@ -526,19 +509,6 @@ static dispatch_once_t leanplum_onceToken;
                                  andBackgroundRegionNames:&backgroundRegionNames];
                 self.regionInitBlock(self.regions, foregroundRegionNames, backgroundRegionNames);
             }
-        }
-
-        BOOL interfaceUpdated = NO;
-        if (updateRules_) {
-            interfaceUpdated = ![updateRules_ isEqual:self.updateRulesDiffs];
-            self.updateRulesDiffs = [updateRules_ mutableCopy];
-            [self downloadUpdateRulesImages];
-        }
-        
-        BOOL eventsUpdated = NO;
-        if (eventRules_ && ![eventRules_ isKindOfClass:NSNull.class]) {
-            eventsUpdated = ![eventRules_ isEqual:self.eventRulesDiffs];
-            self.eventRulesDiffs = eventRules_;
         }
 
         if (variants_) {
@@ -558,48 +528,9 @@ static dispatch_once_t leanplum_onceToken;
             if (self.updateBlock) {
                 self.updateBlock();
             }
-            
-            if (interfaceUpdated && self.interfaceUpdateBlock) {
-                self.interfaceUpdateBlock();
-            }
-            
-            if (eventsUpdated && self.eventsUpdateBlock) {
-                self.eventsUpdateBlock();
-            }
         }
     }
     [self.countAggregator incrementCount:@"apply_variable_diffs"];
-}
-
-- (void)applyUpdateRuleDiffs:(NSArray *)updateRuleDiffs
-{
-    self.updateRulesDiffs = [updateRuleDiffs mutableCopy];
-    [self downloadUpdateRulesImages];
-    if (self.interfaceUpdateBlock) {
-        self.interfaceUpdateBlock();
-    }
-    [self saveDiffs];
-}
-
-- (void)downloadUpdateRulesImages
-{
-    for (NSDictionary *updateRule in self.updateRulesDiffs) {
-        NSArray *changes = updateRule[@"changes"];
-        if (changes != nil) {
-            for (NSDictionary *change in changes) {
-                NSString *key = change[@"key"];
-                if (key &&
-                    [[key lowercaseString] rangeOfString:@"image"].location == key.length - 5) {
-                    id name = change[@"value"];
-                    if ([name isKindOfClass:[NSString class]]) {
-                        [LPFileManager maybeDownloadFile:name
-                                            defaultValue:nil
-                                              onComplete:^{}];
-                    }
-                }
-            }
-        }
-    }
 }
 
 - (BOOL)areActionDefinitionsEqual:(NSDictionary *)a other:(NSDictionary *)b
@@ -652,7 +583,7 @@ static dispatch_once_t leanplum_onceToken;
          if ([self.fileAttributes count] > MAX_FILES_SUPPORTED) {
              limitedValues = [self.valuesFromClient mutableCopy];
              [(NSMutableDictionary *)limitedValues removeObjectForKey:LP_VALUE_RESOURCES_VARIABLE];
-             NSLog(@"Leanplum: ERROR: You are trying to sync %lu files, which is more than "
+             LPLog(LPError, @"You are trying to sync %lu files, which is more than "
                    @"we support (%d). If you are calling [Leanplum syncResources], try adding "
                    @"regex filters to limit the number of files you are syncing.",
                    (unsigned long) self.fileAttributes.count, MAX_FILES_SUPPORTED);
@@ -669,9 +600,7 @@ static dispatch_once_t leanplum_onceToken;
                  args[LP_PARAM_ACTION_DEFINITIONS] = [LPJSON stringFromJSON:self.actionDefinitions];
              }
              args[LP_PARAM_FILE_ATTRIBUTES] = [LPJSON stringFromJSON:limitedFileAttributes];
-             LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                             initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-             id<LPRequesting> request = [reqFactory setVarsWithParams:args];
+             LPRequest *request = [LPRequestFactory setVarsWithParams:args];
              [[LPRequestSender sharedInstance] send:request];
              return YES;
          } @catch (NSException *e) {
@@ -706,9 +635,8 @@ static dispatch_once_t leanplum_onceToken;
             NSString *variationPath = [LPFileManager fileRelativeToAppBundle:name];
             if ((totalSize > MAX_UPLOAD_BATCH_SIZES &&
                  filenames.count > 0) || filenames.count >= MAX_UPLOAD_BATCH_FILES) {
-                [[LeanplumRequest post:LP_METHOD_UPLOAD_FILE
-                                params:@{LP_PARAM_DATA: [LPJSON stringFromJSON:fileData]}]
-                 sendFilesNow:filenames];
+                LPRequest *request = [LPRequestFactory uploadFileWithParams:@{LP_PARAM_DATA: [LPJSON stringFromJSON:fileData]}];
+                [[LPRequestSender sharedInstance] send:request];
                 filenames = [NSMutableArray array];
                 fileData = [NSMutableArray array];
                 totalSize = 0;
@@ -744,20 +672,6 @@ static dispatch_once_t leanplum_onceToken;
     [self.countAggregator incrementCount:@"on_update_varcache"];
 }
 
-- (void)onInterfaceUpdate:(CacheUpdateBlock)block
-{
-    self.interfaceUpdateBlock = block;
-    
-    [self.countAggregator incrementCount:@"on_interface_update"];
-}
-
-- (void)onEventsUpdate:(CacheUpdateBlock)block
-{
-    self.eventsUpdateBlock = block;
-    
-    [self.countAggregator incrementCount:@"on_events_update"];
-}
-
 - (NSMutableDictionary *)userAttributes
 {
     if (!_userAttributes) {
@@ -775,7 +689,7 @@ static dispatch_once_t leanplum_onceToken;
                 }
             }
         } @catch (NSException *exception) {
-            NSLog(@"Leanplum: Could not load user attributes: %@", exception);
+            LPLog(LPError, @"Could not load user attributes: %@", exception);
         }
     }
     if (!_userAttributes) {
@@ -857,8 +771,6 @@ static dispatch_once_t leanplum_onceToken;
     self.actionDefinitions = nil;
     self.diffs = nil;
     self.messageDiffs = nil;
-    self.updateRulesDiffs = nil;
-    self.eventRulesDiffs = nil;
     self.devModeValuesFromServer = nil;
     self.devModeFileAttributesFromServer = nil;
     self.devModeActionDefinitionsFromServer = nil;
@@ -866,8 +778,6 @@ static dispatch_once_t leanplum_onceToken;
     self.variantDebugInfo = nil;
     self.userAttributes = nil;
     self.updateBlock = nil;
-    self.interfaceUpdateBlock = nil;
-    self.eventsUpdateBlock = nil;
     self.hasReceivedDiffs = NO;
     self.messages = nil;
     self.merged = nil;

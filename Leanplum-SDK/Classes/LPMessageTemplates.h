@@ -32,12 +32,10 @@
 #import <WebKit/WebKit.h>
 #import "Leanplum.h"
 
-static NSString *DEFAULTS_ASKED_TO_PUSH = @"__Leanplum_asked_to_push";
-static NSString *DEFAULTS_LEANPLUM_ENABLED_PUSH = @"__Leanplum_enabled_push";
+NS_ASSUME_NONNULL_BEGIN
 
-@interface LPMessageTemplatesClass : NSObject <UIAlertViewDelegate, WKNavigationDelegate> {
-    NSMutableArray *_contexts;
-}
+NS_SWIFT_NAME(MessageTemplates)
+@interface LPMessageTemplatesClass : NSObject <UIAlertViewDelegate, WKNavigationDelegate>
 
 + (LPMessageTemplatesClass *)sharedTemplates;
 + (UIViewController *)visibleViewController;
@@ -55,3 +53,5 @@ static NSString *DEFAULTS_LEANPLUM_ENABLED_PUSH = @"__Leanplum_enabled_push";
 - (void)setAlternateIconWithFilename:(NSString *)filename;
 
 @end
+
+NS_ASSUME_NONNULL_END

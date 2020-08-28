@@ -25,6 +25,7 @@
 #import "LeanplumInternal.h"
 #import "LPRequest.h"
 #import "LPCountAggregator.h"
+#import "LPNetworkConstants.h"
 
 @interface LPRequest()
 
@@ -51,8 +52,7 @@
 
 + (LPRequest *)get:(NSString *)apiMethod params:(NSDictionary *)params
 {
-    LPLogType level = [apiMethod isEqualToString:LP_METHOD_LOG] ? LPDebug : LPVerbose;
-    LPLog(level, @"Will call API method %@ with arguments %@", apiMethod, params);
+    LPLog(LPDebug, @"Will call API method %@ with arguments %@", apiMethod, params);
     
     [[LPCountAggregator sharedAggregator] incrementCount:@"get_lprequest"];
     
@@ -61,8 +61,7 @@
 
 + (LPRequest *)post:(NSString *)apiMethod params:(NSDictionary *)params
 {
-    LPLogType level = [apiMethod isEqualToString:LP_METHOD_LOG] ? LPDebug : LPVerbose;
-    LPLog(level, @"Will call API method %@ with arguments %@", apiMethod, params);
+    LPLog(LPDebug, @"Will call API method %@ with arguments %@", apiMethod, params);
     
     [[LPCountAggregator sharedAggregator] incrementCount:@"post_lpquest"];
     

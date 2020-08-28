@@ -21,7 +21,7 @@
                                       args:(NSDictionary *)args
                                  messageId:(NSString *)messageId;
 - (void)setProperArgs;
-
+-(NSString *)asciiEncodedFileURL:(NSString *)filePath;
 @end
 
 @interface LPActionContextTest : XCTestCase
@@ -34,7 +34,11 @@
     [super setUp];
     
     // initialize the var cache to be empty and have a dummy action
-    [[LPVarCache sharedCache] applyVariableDiffs:nil messages:nil updateRules:nil eventRules:nil variants:nil regions:nil variantDebugInfo:nil];
+    [[LPVarCache sharedCache] applyVariableDiffs:nil
+                                        messages:nil
+                                        variants:nil
+                                         regions:nil
+                                variantDebugInfo:nil];
     [[LPVarCache sharedCache] registerActionDefinition:@"action" ofKind:0 withArguments:@[] andOptions:@{}];
 }
 
@@ -53,7 +57,11 @@
     NSMutableDictionary *message = [[NSMutableDictionary alloc] init];
     message[LP_KEY_VARS] = @{@"key1": @"value1"};
     NSDictionary *messages = @{@"1": message};
-    [[LPVarCache sharedCache] applyVariableDiffs:nil messages:messages updateRules:nil eventRules:nil variants:nil regions:nil variantDebugInfo:nil];
+    [[LPVarCache sharedCache] applyVariableDiffs:nil
+                                        messages:messages
+                                        variants:nil
+                                         regions:nil
+                                variantDebugInfo:nil];
     
     // set args from the message in the cache
     [context setProperArgs];
@@ -72,7 +80,11 @@
     NSMutableDictionary *message = [[NSMutableDictionary alloc] init];
     message[LP_KEY_VARS] = nil;
     NSDictionary *messages = @{@"1": message};
-    [[LPVarCache sharedCache] applyVariableDiffs:nil messages:messages updateRules:nil eventRules:nil variants:nil regions:nil variantDebugInfo:nil];
+    [[LPVarCache sharedCache] applyVariableDiffs:nil
+                                        messages:messages
+                                        variants:nil
+                                         regions:nil
+                                variantDebugInfo:nil];
     
     // set nil args from the message in the cache
     [context setProperArgs];
@@ -89,12 +101,26 @@
     
     // apply diffs with no message to increase content version
     NSDictionary *messages = @{};
-    [[LPVarCache sharedCache] applyVariableDiffs:nil messages:messages updateRules:nil eventRules:nil variants:nil regions:nil variantDebugInfo:nil];
+    [[LPVarCache sharedCache] applyVariableDiffs:nil
+                                        messages:messages
+                                        variants:nil
+                                         regions:nil
+                                variantDebugInfo:nil];
     
     // no message in cache, args should not be set
     [context setProperArgs];
     
     XCTAssertEqualObjects([context args], @{});
+}
+
+- (void)test_asciiEncodedFileURL {
+    LPActionContext *context = [LPActionContext
+                                actionContextWithName:@"action"
+                                args:@{}
+                                messageId:@"1"];
+    NSString *filePath = @"/Users/mayank/Library/Developer/CoreSimulator/Devices/24394C0B-8820-4369-B3AA-9BF26F62A798/data/Containers/Data/Application/29AF4C33-1C94-46DF-A8A5-4B4CD5A3A364/Library/Caches/Leanplum_Resources/lp_public_sf_ui_font.css";
+    NSString *encodedUrl = [context asciiEncodedFileURL:filePath];
+    XCTAssert([encodedUrl isEqualToString:@"file:///Users/mayank/Library/Developer/CoreSimulator/Devices/24394C0B-8820-4369-B3AA-9BF26F62A798/data/Containers/Data/Application/29AF4C33-1C94-46DF-A8A5-4B4CD5A3A364/Library/Caches/Leanplum_Resources/lp_public_sf_ui_font.css"]);
 }
 
 @end

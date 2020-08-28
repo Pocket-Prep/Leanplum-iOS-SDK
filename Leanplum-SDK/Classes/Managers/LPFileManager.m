@@ -27,7 +27,6 @@
 #import "LPFileManager.h"
 #import "LPVarCache.h"
 #import "Leanplum.h"
-#import "LeanplumRequest.h"
 #include <dirent.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -37,10 +36,10 @@
 #import "LPCountAggregator.h"
 #import "LPFileTransferManager.h"
 
-typedef enum {
+typedef NS_ENUM(NSUInteger, LeanplumFileTraversalOperation) {
     kLeanplumFileOperationGet = 0,
     kLeanplumFileOperationDelete = 1,
-} LeanplumFileTraversalOperation;
+};
 
 NSString *appBundlePath;
 BOOL initializing = NO;
@@ -328,7 +327,7 @@ LeanplumVariablesChangedBlock resourceSyncingReady;
                                                        attributes:nil
                                                             error:&error];
             if (error != nil) {
-                NSLog(@"Leanplum: Error creating directory: %@", error);
+                LPLog(LPError, @"Error creating directory: %@", error);
             } else {
                 [directoryExistenceCache addObject:directory];
             }
@@ -463,7 +462,7 @@ LeanplumVariablesChangedBlock resourceSyncingReady;
 + (void)linkItemAtPath:(NSString *)source toPath:(NSString *)dest
 {
     if (symlink([source UTF8String], [dest UTF8String])) {
-        NSLog(@"Leanplum: Error syncing file %@: Code %d", source, errno);
+        LPLog(LPError, @"Syncing file %@: Code %d", source, errno);
     }
 }
 
@@ -618,7 +617,7 @@ LeanplumVariablesChangedBlock resourceSyncingReady;
         if (!error) {
             [regexArray addObject:regex];
         } else {
-            NSLog(@"Leanplum: Error: %@", error);
+            LPLog(LPError, error);
             error = nil;
         }
     }
@@ -825,7 +824,7 @@ LeanplumVariablesChangedBlock resourceSyncingReady;
         [[NSUserDefaults standardUserDefaults] synchronize];
     }
     if (error) {
-        NSLog(@"Leanplum: %@", error);
+        LPLog(LPError, error);
     }
     hasInited = YES;
     initializing = NO;
@@ -848,12 +847,35 @@ LeanplumVariablesChangedBlock resourceSyncingReady;
                                       forKey:NSURLIsExcludedFromBackupKey
                                        error:&error];
         if (!success) {
-            NSLog(@"Leanplum: Error excluding %@ from backup %@", [url lastPathComponent], error);
+            LPLog(LPError, @"Excluding %@ from backup %@", [url lastPathComponent], error);
         }
         return success;
     }
     return NO;
     LP_END_TRY
+}
+
++ (void)clearCacheIfSDKUpdated {
+    NSString *savedSdkVersionKey = @"savedSdkVersion";
+    NSString *savedSdkVersion = [[NSUserDefaults standardUserDefaults] valueForKey:savedSdkVersionKey];
+    if(![[LPConstantsState sharedState].sdkVersion isEqualToString:savedSdkVersion]) {
+        [[NSUserDefaults standardUserDefaults] setValue:[LPConstantsState sharedState].sdkVersion forKey:savedSdkVersionKey];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        NSString *cachesDir = [[self cachesDirectory] stringByAppendingPathComponent:@"Leanplum_Resources"];
+        
+        NSFileManager *fileManager = [[NSFileManager alloc] init];
+        NSDirectoryEnumerator *enumerator = [fileManager enumeratorAtPath:cachesDir];
+        NSString *file;
+
+        while (file = [enumerator nextObject]) {
+            NSError *error = nil;
+            BOOL result = [fileManager removeItemAtPath:[cachesDir stringByAppendingPathComponent:file] error:&error];
+
+            if (!result && error) {
+                LPLog(LPError, @"Cleaning cache error: %@, for file %@", error, file);
+            }
+        }
+    }
 }
 
 @end

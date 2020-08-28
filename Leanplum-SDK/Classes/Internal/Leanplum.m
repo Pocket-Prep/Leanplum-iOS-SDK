@@ -23,7 +23,6 @@
 //  under the License.
 
 #import "LeanplumInternal.h"
-#import "LeanplumRequest.h"
 #import "LPConstants.h"
 #import "UIDevice+IdentifierAddition.h"
 #import "LPVarCache.h"
@@ -37,19 +36,29 @@
 #import "NSTimer+Blocks.h"
 #import "LPActionManager.h"
 #import "LPMessageTemplates.h"
-#include <sys/sysctl.h>
 #import "LPRevenueManager.h"
 #import "LPSwizzle.h"
 #import "LPInbox.h"
 #import "LPUIAlert.h"
 #import "LPUtils.h"
 #import "LPAppIconManager.h"
-#import "LPUIEditorWrapper.h"
 #import "LPCountAggregator.h"
 #import "LPRequestFactory.h"
 #import "LPFileTransferManager.h"
 #import "LPRequestSender.h"
 #import "LPAPIConfig.h"
+#import "LPOperationQueue.h"
+#include <sys/sysctl.h>
+
+NSString *const kAppKeysFileName = @"Leanplum-Info";
+NSString *const kAppKeysFileType = @"plist";
+
+NSString *const kAppIdKey = @"APP_ID";
+NSString *const kDevKey = @"DEV_KEY";
+NSString *const kProdKey = @"PROD_KEY";
+NSString *const kEnvKey = @"ENV";
+NSString *const kEnvDevelopment = @"development";
+NSString *const kEnvProduction = @"production";
 
 static NSString *leanplum_deviceId = nil;
 static NSString *registrationEmail = nil;
@@ -79,9 +88,25 @@ static LeanplumPushSetupBlock pushSetupBlock;
 
 void leanplumExceptionHandler(NSException *exception);
 
-BOOL inForeground = NO;
-
 @implementation Leanplum
+
++(void)load
+{
+    NSDictionary *appKeysDictionary = [self getDefaultAppKeysPlist];
+    if (appKeysDictionary == nil) {
+        return;
+    }
+    NSString *env = appKeysDictionary[kEnvKey];
+    if ([self setAppUsingPlist:appKeysDictionary forEnvironment:env]) {
+        return;
+    }
+
+#if DEBUG
+    [self setAppUsingPlist:appKeysDictionary forEnvironment:kEnvDevelopment];
+#else
+    [self setAppUsingPlist:appKeysDictionary forEnvironment:kEnvProduction];
+#endif
+}
 
 + (void)throwError:(NSString *)reason
 {
@@ -92,7 +117,7 @@ BOOL inForeground = NO;
                                                          @"in development mode.", reason]
                      userInfo:nil]);
     } else {
-        NSLog(@"Leanplum: Error: %@", reason);
+        LPLog(LPError, reason);
     }
 }
 
@@ -154,6 +179,16 @@ BOOL inForeground = NO;
 {
     LP_TRY
     [LPConstantsState sharedState].verboseLoggingInDevelopmentMode = enabled;
+    if (enabled) {
+        [Leanplum setLogLevel:Debug];
+    }
+    LP_END_TRY
+}
+
++ (void)setLogLevel:(LPLogLevel)level
+{
+    LP_TRY
+    [LPLogManager setLogLevel:level];
     LP_END_TRY
 }
 
@@ -238,6 +273,50 @@ BOOL inForeground = NO;
     LP_END_TRY
 }
 
++ (NSDictionary *) getDefaultAppKeysPlist
+{
+    NSString *plistFilePath = [[NSBundle mainBundle] pathForResource:kAppKeysFileName ofType:kAppKeysFileType];
+    NSString *ignoreMessage = @"Ignore if not using Leanplum with plist configuration.";
+    if (plistFilePath == nil) {
+        LPLog(LPDebug, [NSString stringWithFormat:@"[Leanplum getDefaultAppKeysPlist] Could not locate configuration file: '%@.%@'. %@", kAppKeysFileName, kAppKeysFileType, ignoreMessage]);
+        return nil;
+    }
+    
+    NSDictionary *appKeysDictionary = [NSDictionary dictionaryWithContentsOfFile:plistFilePath];
+    if (appKeysDictionary == nil) {
+        LPLog(LPDebug, [NSString stringWithFormat:@"[Leanplum getDefaultAppKeysPlist] The configuration file is not a dictionary: '%@.%@'. %@", kAppKeysFileName, kAppKeysFileType, ignoreMessage]);
+    }
+    
+    return appKeysDictionary;
+}
+
++ (BOOL)setAppUsingPlist:(NSDictionary *)appKeysDictionary forEnvironment:(NSString *)env {
+    if ([[env lowercaseString] isEqualToString:kEnvDevelopment]) {
+        [self setAppId:appKeysDictionary[kAppIdKey] withDevelopmentKey:appKeysDictionary[kDevKey]];
+        LPLog(LPDebug, [NSString stringWithFormat:@"Leanplum configured for '%@' using configuration file: '%@.%@'.", kEnvDevelopment, kAppKeysFileName, kAppKeysFileType]);
+        return YES;
+    } else if ([[env lowercaseString] isEqualToString:kEnvProduction]) {
+        [self setAppId:appKeysDictionary[kAppIdKey] withProductionKey:appKeysDictionary[kProdKey]];
+        LPLog(LPDebug, [NSString stringWithFormat:@"Leanplum configured for '%@' using configuration file: '%@.%@'.", kEnvProduction, kAppKeysFileName, kAppKeysFileType]);
+        return YES;
+    }
+    return NO;
+}
+
++ (void)setAppEnvironment:(NSString *)env
+{
+    if (![[env lowercaseString] isEqualToString:kEnvProduction] && ![[env lowercaseString] isEqualToString:kEnvDevelopment]) {
+        [self throwError:@"[Leanplum setAppEnvironment:] Incorrect env parameter. Use \"development\" or \"production\"."];
+        return;
+    }
+    if ([LPInternalState sharedState].calledStart) {
+        [self throwError:@"[Leanplum setAppEnvironment:] Leanplum already started. Call this method before [Leanplum start]."];
+        return;
+    }
+
+    [self setAppUsingPlist:[Leanplum getDefaultAppKeysPlist] forEnvironment:env];
+}
+
 + (void)setAppId:(NSString *)appId withDevelopmentKey:(NSString *)accessKey
 {
     if ([LPUtils isNullOrEmpty:appId]) {
@@ -254,7 +333,6 @@ BOOL inForeground = NO;
     LP_TRY
     [LPConstantsState sharedState].isDevelopmentModeEnabled = YES;
     [[LPAPIConfig sharedConfig] setAppId:appId withAccessKey:accessKey];
-    [LeanplumRequest initializeStaticVars];
     LP_END_TRY
 }
 
@@ -280,7 +358,6 @@ BOOL inForeground = NO;
     LP_TRY
     [LPConstantsState sharedState].isDevelopmentModeEnabled = NO;
     [[LPAPIConfig sharedConfig] setAppId:appId withAccessKey:accessKey];
-    [LeanplumRequest initializeStaticVars];
     LP_END_TRY
 }
 
@@ -289,21 +366,6 @@ BOOL inForeground = NO;
     LP_TRY
     _extensionContext = context;
     LP_END_TRY
-}
-
-+ (void)allowInterfaceEditing
-{
-    [self throwError:@"Leanplum UI Editor has moved to separate Pod."
-     "Please remove this method call and include this "
-     "line in your Podfile: pod 'Leanplum-iOS-UIEditor'"];
-}
-
-+ (BOOL)interfaceEditingEnabled
-{
-    [self throwError:@"Leanplum UI Editor has moved to separate Pod."
-     "Please remove this method call and include this "
-     "line in your Podfile: pod 'Leanplum-iOS-UIEditor'"];
-    return NO;
 }
 
 + (void)setDeviceId:(NSString *)deviceId
@@ -324,23 +386,12 @@ BOOL inForeground = NO;
     LP_END_TRY
 }
 
-+ (void)syncResources
-{
-    [self syncResourcesAsync:NO];
-}
-
 + (void)syncResourcesAsync:(BOOL)async
 {
     LP_TRY
     [LPFileManager initAsync:async];
     LP_END_TRY
     [[LPCountAggregator sharedAggregator] incrementCount:@"sync_resources"];
-}
-
-+ (void)syncResourcePaths:(NSArray *)patternsToIncludeOrNil
-                excluding:(NSArray *)patternsToExcludeOrNil
-{
-    [self syncResourcePaths:patternsToIncludeOrNil excluding:patternsToExcludeOrNil async:NO];
 }
 
 + (void)syncResourcePaths:(NSArray *)patternsToIncludeOrNil
@@ -369,12 +420,6 @@ BOOL inForeground = NO;
         isSyncing = NO;
         [[NSUserDefaults standardUserDefaults] synchronize];
     });
-}
-
-+ (NSString *)pushTokenKey
-{
-    return [NSString stringWithFormat: LEANPLUM_DEFAULTS_PUSH_TOKEN_KEY,
-            [LPAPIConfig sharedConfig].appId, [LPAPIConfig sharedConfig].userId, [LPAPIConfig sharedConfig].deviceId];
 }
 
 + (void)start
@@ -410,26 +455,39 @@ BOOL inForeground = NO;
 + (void)triggerStartIssued
 {
     [LPInternalState sharedState].issuedStart = YES;
-    for (LeanplumStartIssuedBlock block in [LPInternalState sharedState].startIssuedBlocks.copy) {
-        block();
+    NSMutableArray* startIssuedBlocks = [LPInternalState sharedState].startIssuedBlocks;
+
+    @synchronized (startIssuedBlocks) {
+        for (LeanplumStartIssuedBlock block in startIssuedBlocks) {
+            block();
+        }
+        [startIssuedBlocks removeAllObjects];
     }
-    [[LPInternalState sharedState].startIssuedBlocks removeAllObjects];
 }
 
 + (void)triggerStartResponse:(BOOL)success
 {
     LP_BEGIN_USER_CODE
-    for (NSInvocation *invocation in [LPInternalState sharedState].startResponders.copy) {
-        [invocation setArgument:&success atIndex:2];
-        [invocation invoke];
+
+    NSMutableSet* startResponders = [LPInternalState sharedState].startResponders;
+    NSMutableArray* startBlocks = [LPInternalState sharedState].startBlocks;
+
+    @synchronized (startResponders) {
+        for (NSInvocation *invocation in startResponders) {
+            [invocation setArgument:&success atIndex:2];
+            [invocation invoke];
+        }
+        [startResponders removeAllObjects];
     }
 
-    for (LeanplumStartBlock block in [LPInternalState sharedState].startBlocks.copy) {
-        block(success);
+    @synchronized (startBlocks) {
+        for (LeanplumStartBlock block in startBlocks) {
+            block(success);
+        }
+        [startBlocks removeAllObjects];
     }
+
     LP_END_USER_CODE
-    [[LPInternalState sharedState].startResponders removeAllObjects];
-    [[LPInternalState sharedState].startBlocks removeAllObjects];
 }
 
 + (void)triggerVariablesChanged
@@ -442,35 +500,6 @@ BOOL inForeground = NO;
 
     for (LeanplumVariablesChangedBlock block in [LPInternalState sharedState]
              .variablesChangedBlocks.copy) {
-        block();
-    }
-    LP_END_USER_CODE
-}
-
-+ (void)triggerInterfaceChanged
-{
-    LP_BEGIN_USER_CODE
-    for (NSInvocation *invocation in [LPInternalState sharedState]
-             .interfaceChangedResponders.copy) {
-        [invocation invoke];
-    }
-
-    for (LeanplumInterfaceChangedBlock block in [LPInternalState sharedState]
-             .interfaceChangedBlocks.copy) {
-        block();
-    }
-    LP_END_USER_CODE
-}
-
-+ (void)triggerEventsChanged
-{
-    LP_BEGIN_USER_CODE
-    for (NSInvocation *invocation in [LPInternalState sharedState].eventsChangedResponders.copy) {
-        [invocation invoke];
-    }
-
-    for (LeanplumEventsChangedBlock block in [LPInternalState sharedState]
-             .eventsChangedBlocks.copy) {
         block();
     }
     LP_END_USER_CODE
@@ -582,11 +611,6 @@ BOOL inForeground = NO;
     }
 }
 
-+ (void)setDeveloperEmail:(NSString *)email __deprecated
-{
-    registrationEmail = email;
-}
-
 + (void)onHasStartedAndRegisteredAsDeveloper
 {
     if ([LPFileManager initializing]) {
@@ -674,11 +698,7 @@ BOOL inForeground = NO;
     [state.actionBlocks removeAllObjects];
     [state.actionResponders removeAllObjects];
     [state.variablesChangedBlocks removeAllObjects];
-    [state.interfaceChangedBlocks removeAllObjects];
-    [state.eventsChangedBlocks removeAllObjects];
     [state.variablesChangedResponders removeAllObjects];
-    [state.interfaceChangedResponders removeAllObjects];
-    [state.eventsChangedResponders removeAllObjects];
     [state.noDownloadsBlocks removeAllObjects];
     [state.onceNoDownloadsBlocks removeAllObjects];
     [state.noDownloadsResponders removeAllObjects];
@@ -728,6 +748,8 @@ BOOL inForeground = NO;
         return;
     }
     
+    [LPFileManager clearCacheIfSDKUpdated];
+    
     [[LPCountAggregator sharedAggregator] incrementCount:@"start_with_user_id"];
     
     LP_TRY
@@ -739,13 +761,14 @@ BOOL inForeground = NO;
     if (IS_NOOP) {
         state.hasStarted = YES;
         state.startSuccessful = YES;
-        [[LPVarCache sharedCache] applyVariableDiffs:@{} messages:@{} updateRules:@[] eventRules:@[]
-                              variants:@[] regions:@{} variantDebugInfo:@{}];
+        [[LPVarCache sharedCache] applyVariableDiffs:@{}
+                                            messages:@{}
+                                            variants:@[]
+                                             regions:@{}
+                                    variantDebugInfo:@{}];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self triggerStartResponse:YES];
             [self triggerVariablesChanged];
-            [self triggerInterfaceChanged];
-            [self triggerEventsChanged];
             [self triggerVariablesChangedAndNoDownloadsPending];
             [[self inbox] updateMessages:[[NSMutableDictionary alloc] init] unreadCount:0];
         });
@@ -760,7 +783,8 @@ BOOL inForeground = NO;
             [Leanplum resume];
             return;
         }
-        [self throwError:@"Already called start."];
+        LPLog(LPError, @"Already called start.");
+        return;
     }
 
     [LPMessageTemplatesClass sharedTemplates];
@@ -786,17 +810,11 @@ BOOL inForeground = NO;
     [[LPVarCache sharedCache] onUpdate:^{
         [self triggerVariablesChanged];
 
-        if (LeanplumRequest.numPendingDownloads == 0) {
+        if ([LPFileTransferManager sharedInstance].numPendingDownloads == 0) {
             [self triggerVariablesChangedAndNoDownloadsPending];
         }
     }];
-    [[LPVarCache sharedCache] onInterfaceUpdate:^{
-        [self triggerInterfaceChanged];
-    }];
-    [[LPVarCache sharedCache] onEventsUpdate:^{
-        [self triggerEventsChanged];
-    }];
-    [LeanplumRequest onNoPendingDownloads:^{
+    [[LPFileTransferManager sharedInstance] onNoPendingDownloads:^{
         [self triggerVariablesChangedAndNoDownloadsPending];
     }];
 
@@ -867,13 +885,6 @@ BOOL inForeground = NO;
         params[LP_PARAM_INCLUDE_VARIANT_DEBUG_INFO] = @(YES);
     }
 
-    BOOL startedInBackground = NO;
-    if ([[UIApplication sharedApplication] applicationState] == UIApplicationStateBackground &&
-        !_extensionContext) {
-        params[LP_PARAM_BACKGROUND] = @(YES);
-        startedInBackground = YES;
-    }
-
     if (attributes != nil) {
         params[LP_PARAM_USER_ATTRIBUTES] = attributes ?
                 [LPJSON stringFromJSON:attributes] : @"";
@@ -891,16 +902,13 @@ BOOL inForeground = NO;
     params[LP_PARAM_INBOX_MESSAGES] = [self.inbox messagesIds];
     
     // Push token.
-    NSString *pushTokenKey = [Leanplum pushTokenKey];
-    NSString *pushToken = [[NSUserDefaults standardUserDefaults] stringForKey:pushTokenKey];
+    NSString *pushToken = [[LPPushNotificationsManager sharedManager] pushToken];
     if (pushToken) {
         params[LP_PARAM_DEVICE_PUSH_TOKEN] = pushToken;
     }
 
     // Issue start API call.
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory startWithParams:params];
+    LPRequest *request = [LPRequestFactory startWithParams:params];
     [request onResponse:^(id<LPNetworkOperationProtocol> operation, NSDictionary *response) {
         LP_TRY
         state.hasStarted = YES;
@@ -908,8 +916,6 @@ BOOL inForeground = NO;
         NSDictionary *values = response[LP_KEY_VARS];
         NSString *token = response[LP_KEY_TOKEN];
         NSDictionary *messages = response[LP_KEY_MESSAGES];
-        NSArray *updateRules = response[LP_KEY_UPDATE_RULES];
-        NSArray *eventRules = response[LP_KEY_EVENT_RULES];
         NSArray *variants = response[LP_KEY_VARIANTS];
         NSDictionary *regions = response[LP_KEY_REGIONS];
         NSDictionary *variantDebugInfo = [self parseVariantDebugInfoFromResponse:response];
@@ -924,12 +930,10 @@ BOOL inForeground = NO;
         [[LPAPIConfig sharedConfig] setToken:token];
         [[LPAPIConfig sharedConfig] saveToken];
         [[LPVarCache sharedCache] applyVariableDiffs:values
-                              messages:messages
-                           updateRules:updateRules
-                            eventRules:eventRules
-                              variants:variants
-                               regions:regions
-                      variantDebugInfo:variantDebugInfo];
+                                            messages:messages
+                                            variants:variants
+                                             regions:regions
+                                    variantDebugInfo:variantDebugInfo];
 
         if ([response[LP_KEY_SYNC_INBOX] boolValue]) {
             [[self inbox] downloadMessages];
@@ -963,7 +967,7 @@ BOOL inForeground = NO;
                 // Check for updates.
                 NSString *latestVersion = response[LP_KEY_LATEST_VERSION];
                 if (latestVersion) {
-                    NSLog(@"Leanplum: A newer version of the SDK, %@, is available. Please go to "
+                    LPLog(LPInfo, @"A newer version of the SDK, %@, is available. Please go to "
                           @"leanplum.com to download it.", latestVersion);
                 }
             }
@@ -972,7 +976,7 @@ BOOL inForeground = NO;
             NSDictionary *actionDefinitions = response[LP_PARAM_ACTION_DEFINITIONS];
             NSDictionary *fileAttributes = response[LP_PARAM_FILE_ATTRIBUTES];
 
-            [LeanplumRequest setUploadUrl:response[LP_KEY_UPLOAD_URL]];
+            [[LPFileTransferManager sharedInstance] setUploadUrl:response[LP_KEY_UPLOAD_URL]];
             [[LPVarCache sharedCache] setDevModeValuesFromServer:valuesFromCode
                                     fileAttributes:fileAttributes
                                  actionDefinitions:actionDefinitions];
@@ -985,9 +989,7 @@ BOOL inForeground = NO;
             // Report latency for 0.1% of users.
             NSTimeInterval latency = [[NSDate date] timeIntervalSinceDate:startTime];
             if (arc4random() % 1000 == 0) {
-                LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                                initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-                id<LPRequesting> request = [reqFactory logWithParams:@{
+                LPRequest *request = [LPRequestFactory logWithParams:@{
                                         LP_PARAM_TYPE: LP_VALUE_SDK_START_LATENCY,
                                         @"startLatency": [@(latency) description]
                                         }];
@@ -998,15 +1000,12 @@ BOOL inForeground = NO;
         // Upload alternative app icons.
         [LPAppIconManager uploadAppIconsOnDevMode];
 
-        if (!startedInBackground) {
-            inForeground = YES;
-            [self maybePerformActions:@[@"start", @"resume"]
-                        withEventName:nil
-                           withFilter:kLeanplumActionFilterAll
-                        fromMessageId:nil
-                 withContextualValues:nil];
-            [self recordAttributeChanges];
-        }
+        [self maybePerformActions:@[@"start", @"resume"]
+                    withEventName:nil
+                       withFilter:kLeanplumActionFilterAll
+                    fromMessageId:nil
+             withContextualValues:nil];
+        [self recordAttributeChanges];
         LP_END_TRY
     }];
     [request onError:^(NSError *err) {
@@ -1048,26 +1047,16 @@ BOOL inForeground = NO;
                     LP_TRY
                     if ([[UIApplication sharedApplication]
                             respondsToSelector:@selector(currentUserNotificationSettings)]) {
-                        [[LPActionManager sharedManager] sendUserNotificationSettingsIfChanged:
+                        [[LPPushNotificationsManager sharedManager].handler sendUserNotificationSettingsIfChanged:
                                                              [[UIApplication sharedApplication]
                                                                  currentUserNotificationSettings]];
                     }
                     [Leanplum resume];
-                    if (startedInBackground && !inForeground) {
-                        inForeground = YES;
-                        [self maybePerformActions:@[@"start", @"resume"]
-                                    withEventName:nil
-                                       withFilter:kLeanplumActionFilterAll
-                                    fromMessageId:nil
-                             withContextualValues:nil];
-                        [self recordAttributeChanges];
-                    } else {
-                        [self maybePerformActions:@[@"resume"]
-                                    withEventName:nil
-                                       withFilter:kLeanplumActionFilterAll
-                                    fromMessageId:nil
-                             withContextualValues:nil];
-                    }
+                    [self maybePerformActions:@[@"resume"]
+                                withEventName:nil
+                                   withFilter:kLeanplumActionFilterAll
+                                fromMessageId:nil
+                         withContextualValues:nil];
                     LP_END_TRY
                 }];
 
@@ -1081,9 +1070,7 @@ BOOL inForeground = NO;
                     LP_TRY
                     BOOL exitOnSuspend = [[[[NSBundle mainBundle] infoDictionary]
                         objectForKey:@"UIApplicationExitsOnSuspend"] boolValue];
-                    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-                    id<LPRequesting> request = [reqFactory stopWithParams:nil];
+                    LPRequest *request = [LPRequestFactory stopWithParams:nil];
                     [[LPRequestSender sharedInstance] sendIfConnected:request sync:exitOnSuspend];
                     LP_END_TRY
                 }];
@@ -1093,9 +1080,7 @@ BOOL inForeground = NO;
         RETURN_IF_NOOP;
         LP_TRY
         if ([[UIApplication sharedApplication] applicationState] == UIApplicationStateActive) {
-            LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                            initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-            id<LPRequesting> request = [reqFactory heartbeatWithParams:nil];
+            LPRequest *request = [LPRequestFactory heartbeatWithParams:nil];
             [[LPRequestSender sharedInstance] sendIfDelayed:request];
 
         }
@@ -1178,17 +1163,20 @@ BOOL inForeground = NO;
     
     // Block that finish task.
     void (^finishTaskHandler)(void) = ^(){
-        [application endBackgroundTask:backgroundTask];
-        backgroundTask = UIBackgroundTaskInvalid;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            // Make sure all database operations are done before ending the background task.
+            [[LPOperationQueue serialQueue] waitUntilAllOperationsAreFinished];
+
+            [application endBackgroundTask:backgroundTask];
+            backgroundTask = UIBackgroundTaskInvalid;
+        });
     };
     
     // Start background task to make sure it runs when the app is in background.
     backgroundTask = [application beginBackgroundTaskWithExpirationHandler:finishTaskHandler];
-    
+
     // Send pause event.
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory pauseSessionWithParams:nil];
+    LPRequest *request = [LPRequestFactory pauseSessionWithParams:nil];
     [request onResponse:^(id<LPNetworkOperationProtocol> operation, id json) {
         finishTaskHandler();
     }];
@@ -1200,9 +1188,7 @@ BOOL inForeground = NO;
 
 + (void)resume
 {
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory resumeSessionWithParams:nil];
+    LPRequest *request = [LPRequestFactory resumeSessionWithParams:nil];
     [[LPRequestSender sharedInstance] sendIfDelayed:request];
 }
 
@@ -1274,10 +1260,12 @@ BOOL inForeground = NO;
     if ([LPInternalState sharedState].issuedStart) {
         block();
     } else {
-        if (![LPInternalState sharedState].startIssuedBlocks) {
-            [LPInternalState sharedState].startIssuedBlocks = [NSMutableArray array];
+        @synchronized ([LPInternalState sharedState].startIssuedBlocks) {
+            if (![LPInternalState sharedState].startIssuedBlocks) {
+                [LPInternalState sharedState].startIssuedBlocks = [NSMutableArray array];
+            }
+            [[LPInternalState sharedState].startIssuedBlocks addObject:[block copy]];
         }
-        [[LPInternalState sharedState].startIssuedBlocks addObject:[block copy]];
     }
 }
 
@@ -1354,35 +1342,6 @@ BOOL inForeground = NO;
     }
 }
 
-+ (void)onInterfaceChanged:(LeanplumInterfaceChangedBlock)block
-{
-    if (!block) {
-        [self throwError:@"[Leanplum onStartResponse:] Nil block parameter provided."];
-        return;
-    }
-
-    LP_TRY
-    if (![LPInternalState sharedState].interfaceChangedBlocks) {
-        [LPInternalState sharedState].interfaceChangedBlocks = [NSMutableArray array];
-    }
-    [[LPInternalState sharedState].interfaceChangedBlocks addObject:[block copy]];
-    LP_END_TRY
-    if ([[LPVarCache sharedCache] hasReceivedDiffs]) {
-        block();
-    }
-}
-
-+ (void)onEventsChanged:(LeanplumEventsChangedBlock)block
-{
-    if (![LPInternalState sharedState].eventsChangedBlocks) {
-        [LPInternalState sharedState].eventsChangedBlocks = [NSMutableArray array];
-    }
-    [[LPInternalState sharedState].eventsChangedBlocks addObject:[block copy]];
-    if ([[LPVarCache sharedCache] hasReceivedDiffs]) {
-        block();
-    }
-}
-
 + (void)addVariablesChangedResponder:(id)responder withSelector:(SEL)selector
 {
     if (!responder) {
@@ -1406,63 +1365,12 @@ BOOL inForeground = NO;
     }
 }
 
-+ (void)addInterfaceChangedResponder:(id)responder withSelector:(SEL)selector
-{
-    if (!responder) {
-        [self throwError:@"[Leanplum addVariablesChangedResponder:withSelector:] Nil block "
-         @"parameter provided."];
-        return;
-    }
-    if (!selector) {
-        [self throwError:@"[Leanplum addVariablesChangedResponder:withSelector:] Nil selector "
-         @"parameter provided."];
-        return;
-    }
-
-    if (![LPInternalState sharedState].interfaceChangedResponders) {
-        [LPInternalState sharedState].interfaceChangedResponders = [NSMutableSet set];
-    }
-    NSInvocation *invocation = [self createInvocationWithResponder:responder selector:selector];
-    [self addInvocation:invocation toSet:[LPInternalState sharedState].interfaceChangedResponders];
-    if ([[LPVarCache sharedCache] hasReceivedDiffs] && invocation) {
-        [invocation invoke];
-    }
-}
-
-+ (void)addEventsChangedResponder:(id)responder withSelector:(SEL)selector
-{
-    if (![LPInternalState sharedState].eventsChangedResponders) {
-        [LPInternalState sharedState].eventsChangedResponders = [NSMutableSet set];
-    }
-
-    NSInvocation *invocation = [self createInvocationWithResponder:responder selector:selector];
-    [self addInvocation:invocation toSet:[LPInternalState sharedState].eventsChangedResponders];
-    if ([[LPVarCache sharedCache] hasReceivedDiffs] && invocation) {
-        [invocation invoke];
-    }
-}
-
 + (void)removeVariablesChangedResponder:(id)responder withSelector:(SEL)selector
 {
     [self removeResponder:responder
              withSelector:selector
                   fromSet:[LPInternalState sharedState].variablesChangedResponders];
 }
-
-+ (void)removeInterfaceChangedResponder:(id)responder withSelector:(SEL)selector
-{
-    [self removeResponder:responder
-             withSelector:selector
-                  fromSet:[LPInternalState sharedState].interfaceChangedResponders];
-}
-
-+ (void)removeEventsChangedResponder:(id)responder withSelector:(SEL)selector
-{
-    [self removeResponder:responder
-             withSelector:selector
-                  fromSet:[LPInternalState sharedState].eventsChangedResponders];
-}
-
 + (void)onVariablesChangedAndNoDownloadsPending:(LeanplumVariablesChangedBlock)block
 {
     if (!block) {
@@ -1477,7 +1385,7 @@ BOOL inForeground = NO;
     }
     [[LPInternalState sharedState].noDownloadsBlocks addObject:[block copy]];
     LP_END_TRY
-    if ([[LPVarCache sharedCache] hasReceivedDiffs] && LeanplumRequest.numPendingDownloads == 0) {
+    if ([[LPVarCache sharedCache] hasReceivedDiffs] && [LPFileTransferManager sharedInstance].numPendingDownloads == 0) {
         block();
     }
 }
@@ -1490,7 +1398,7 @@ BOOL inForeground = NO;
         return;
     }
 
-    if ([[LPVarCache sharedCache] hasReceivedDiffs] && LeanplumRequest.numPendingDownloads == 0) {
+    if ([[LPVarCache sharedCache] hasReceivedDiffs] && [LPFileTransferManager sharedInstance].numPendingDownloads == 0) {
         block();
     } else {
         LP_TRY
@@ -1542,8 +1450,7 @@ BOOL inForeground = NO;
     }
     NSInvocation *invocation = [self createInvocationWithResponder:responder selector:selector];
     [self addInvocation:invocation toSet:[LPInternalState sharedState].noDownloadsResponders];
-    if ([[LPVarCache sharedCache] hasReceivedDiffs]
-        && LeanplumRequest.numPendingDownloads == 0) {
+    if ([[LPVarCache sharedCache] hasReceivedDiffs] && [LPFileTransferManager sharedInstance].numPendingDownloads == 0) {
         [invocation invoke];
     }
 }
@@ -1599,7 +1506,7 @@ BOOL inForeground = NO;
 
     LP_TRY
     [[LPInternalState sharedState].actionBlocks removeObjectForKey:name];
-    [[LPVarCache sharedCache] registerActionDefinition:name ofKind:kind withArguments:args andOptions:options];
+    [[LPVarCache sharedCache] registerActionDefinition:name ofKind:(int) kind withArguments:args andOptions:options];
     if (responder) {
         [Leanplum onAction:name invoke:responder];
     }
@@ -1637,7 +1544,7 @@ BOOL inForeground = NO;
 {
     LP_TRY
     [LPInternalState sharedState].calledHandleNotification = YES;
-    [[LPActionManager sharedManager] didReceiveRemoteNotification:userInfo
+    [[LPPushNotificationsManager sharedManager].handler didReceiveRemoteNotification:userInfo
                                                        withAction:nil
                                            fetchCompletionHandler:completionHandler];
     LP_END_TRY
@@ -1649,7 +1556,7 @@ BOOL inForeground = NO;
     LP_TRY
     if (![LPUtils isSwizzlingEnabled])
     {
-        [[LPActionManager sharedManager] didRegisterForRemoteNotificationsWithDeviceToken:token];
+        [[LPPushNotificationsManager sharedManager].handler didRegisterForRemoteNotificationsWithDeviceToken:token];
     }
     else
     {
@@ -1663,7 +1570,7 @@ BOOL inForeground = NO;
     LP_TRY
     if (![LPUtils isSwizzlingEnabled])
     {
-        [[LPActionManager sharedManager] didFailToRegisterForRemoteNotificationsWithError:error];
+        [[LPPushNotificationsManager sharedManager].handler didFailToRegisterForRemoteNotificationsWithError:error];
     }
     else
     {
@@ -1677,7 +1584,7 @@ BOOL inForeground = NO;
     LP_TRY
     if (![LPUtils isSwizzlingEnabled])
     {
-        [[LPActionManager sharedManager] didRegisterUserNotificationSettings:notificationSettings];
+        [[LPPushNotificationsManager sharedManager].handler didRegisterUserNotificationSettings:notificationSettings];
     }
     else
     {
@@ -1691,7 +1598,7 @@ BOOL inForeground = NO;
     LP_TRY
     if (![LPUtils isSwizzlingEnabled])
     {
-        [[LPActionManager sharedManager] didReceiveRemoteNotification:userInfo];
+        [[LPPushNotificationsManager sharedManager].handler didReceiveRemoteNotification:userInfo];
     }
     else
     {
@@ -1706,7 +1613,7 @@ BOOL inForeground = NO;
     LP_TRY
     if (![LPUtils isSwizzlingEnabled])
     {
-        [[LPActionManager sharedManager] didReceiveRemoteNotification:userInfo
+        [[LPPushNotificationsManager sharedManager].handler didReceiveRemoteNotification:userInfo
                                                fetchCompletionHandler:completionHandler];
     }
     else
@@ -1722,7 +1629,7 @@ BOOL inForeground = NO;
     LP_TRY
     if (![LPUtils isSwizzlingEnabled])
     {
-        [[LPActionManager sharedManager] didReceiveNotificationResponse:response
+        [[LPPushNotificationsManager sharedManager].handler didReceiveNotificationResponse:response
                                                   withCompletionHandler:completionHandler];
     }
     else
@@ -1737,7 +1644,7 @@ BOOL inForeground = NO;
     LP_TRY
     if (![LPUtils isSwizzlingEnabled])
     {
-        [[LPActionManager sharedManager] didReceiveLocalNotification:localNotification];
+        [[LPLocalNotificationsManager sharedManager].handler didReceiveLocalNotification:localNotification];
     }
     else
     {
@@ -1753,7 +1660,7 @@ BOOL inForeground = NO;
                  completionHandler:(void (^)())completionHandler
 {
     LP_TRY
-    [[LPActionManager sharedManager] didReceiveRemoteNotification:[notification userInfo]
+    [[LPPushNotificationsManager sharedManager].handler didReceiveRemoteNotification:[notification userInfo]
                                                        withAction:identifier
                                            fetchCompletionHandler:completionHandler];
     LP_END_TRY
@@ -1767,7 +1674,7 @@ BOOL inForeground = NO;
                  completionHandler:(void (^)())completionHandler
 {
     LP_TRY
-    [[LPActionManager sharedManager] didReceiveRemoteNotification:notification
+    [[LPPushNotificationsManager sharedManager].handler didReceiveRemoteNotification:notification
                                                        withAction:identifier
                                            fetchCompletionHandler:completionHandler];
     LP_END_TRY
@@ -1782,7 +1689,7 @@ BOOL inForeground = NO;
         return;
     }
     LP_TRY
-    [[LPActionManager sharedManager] setShouldHandleNotification:block];
+    [[LPPushNotificationsManager sharedManager] setShouldHandleNotification:block];
     LP_END_TRY
 }
 
@@ -1827,122 +1734,125 @@ BOOL inForeground = NO;
        withContextualValues:(LPContextualValues *)contextualValues
 {
     NSDictionary *messages = [[LPVarCache sharedCache] messages];
-    NSMutableArray *actionContexts = [NSMutableArray array];
-    
-    for (NSString *messageId in [messages allKeys]) {
-        if (sourceMessage != nil && [messageId isEqualToString:sourceMessage]) {
-            continue;
-        }
-        NSDictionary *messageConfig = messages[messageId];
-        NSString *actionType = messageConfig[@"action"];
-        if (![actionType isKindOfClass:NSString.class]) {
-            continue;
-        }
 
-        NSString *internalMessageId;
-        if ([actionType isEqualToString:LP_HELD_BACK_ACTION]) {
-            // Spoof the message ID if this is a held back message.
-            internalMessageId = [LP_HELD_BACK_MESSAGE_PREFIX stringByAppendingString:messageId];
-        } else {
-            internalMessageId = messageId;
-        }
+    @synchronized (messages) {
+        NSMutableArray *actionContexts = [NSMutableArray array];
 
-        // Filter action types that don't match the filtering criteria.
-        BOOL isForeground = ![actionType isEqualToString:LP_PUSH_NOTIFICATION_ACTION];
-        if (isForeground) {
-            if (!(filter & kLeanplumActionFilterForeground)) {
+        for (NSString *messageId in [messages allKeys]) {
+            if (sourceMessage != nil && [messageId isEqualToString:sourceMessage]) {
                 continue;
             }
-        } else {
-            if (!(filter & kLeanplumActionFilterBackground)) {
+            NSDictionary *messageConfig = messages[messageId];
+            NSString *actionType = messageConfig[@"action"];
+            if (![actionType isKindOfClass:NSString.class]) {
                 continue;
             }
-        }
 
-        LeanplumMessageMatchResult result = LeanplumMessageMatchResultMake(NO, NO, NO, NO);
-        for (NSString *when in whenConditions) {
-            LeanplumMessageMatchResult conditionResult =
-            [[LPInternalState sharedState].actionManager shouldShowMessage:internalMessageId
-                                                                withConfig:messageConfig
-                                                                      when:when
-                                                             withEventName:eventName
-                                                          contextualValues:contextualValues];
-            result.matchedTrigger |= conditionResult.matchedTrigger;
-            result.matchedUnlessTrigger |= conditionResult.matchedUnlessTrigger;
-            result.matchedLimit |= conditionResult.matchedLimit;
-            result.matchedActivePeriod |= conditionResult.matchedActivePeriod;
-        }
+            NSString *internalMessageId;
+            if ([actionType isEqualToString:LP_HELD_BACK_ACTION]) {
+                // Spoof the message ID if this is a held back message.
+                internalMessageId = [LP_HELD_BACK_MESSAGE_PREFIX stringByAppendingString:messageId];
+            } else {
+                internalMessageId = messageId;
+            }
 
-        // Make sure it's within the active period.
-        if (!result.matchedActivePeriod) {
-            continue;
-        }
-        
-        // Make sure we cancel before matching in case the criteria overlap.
-        if (result.matchedUnlessTrigger) {
-            NSString *cancelActionName = [@"__Cancel" stringByAppendingString:actionType];
-            LPActionContext *context = [LPActionContext actionContextWithName:cancelActionName
-                                                                         args:@{}
-                                                                    messageId:messageId];
-            [self triggerAction:context handledBlock:^(BOOL success) {
-                if (success) {
-                    // Track cancel.
-                    [Leanplum track:@"Cancel" withValue:0.0 andInfo:nil
-                            andArgs:@{LP_PARAM_MESSAGE_ID: messageId} andParameters:nil];
+            // Filter action types that don't match the filtering criteria.
+            BOOL isForeground = ![actionType isEqualToString:LP_PUSH_NOTIFICATION_ACTION];
+            if (isForeground) {
+                if (!(filter & kLeanplumActionFilterForeground)) {
+                    continue;
                 }
-            }];
-        }
-        if (result.matchedTrigger) {
-            [[LPInternalState sharedState].actionManager recordMessageTrigger:internalMessageId];
-            if (result.matchedLimit) {
-                NSNumber *priority = messageConfig[@"priority"] ?: @(DEFAULT_PRIORITY);
-                LPActionContext *context = [LPActionContext
-                                            actionContextWithName:actionType
-                                            args:[messageConfig objectForKey:LP_KEY_VARS]
-                                            messageId:internalMessageId
-                                            originalMessageId:messageId
-                                            priority:priority];
-                context.contextualValues = contextualValues;
-                [actionContexts addObject:context];
+            } else {
+                if (!(filter & kLeanplumActionFilterBackground)) {
+                    continue;
+                }
+            }
+
+            LeanplumMessageMatchResult result = LeanplumMessageMatchResultMake(NO, NO, NO, NO);
+            for (NSString *when in whenConditions) {
+                LeanplumMessageMatchResult conditionResult =
+                [[LPInternalState sharedState].actionManager shouldShowMessage:internalMessageId
+                                                                    withConfig:messageConfig
+                                                                          when:when
+                                                                 withEventName:eventName
+                                                              contextualValues:contextualValues];
+                result.matchedTrigger |= conditionResult.matchedTrigger;
+                result.matchedUnlessTrigger |= conditionResult.matchedUnlessTrigger;
+                result.matchedLimit |= conditionResult.matchedLimit;
+                result.matchedActivePeriod |= conditionResult.matchedActivePeriod;
+            }
+
+            // Make sure it's within the active period.
+            if (!result.matchedActivePeriod) {
+                continue;
+            }
+
+            // Make sure we cancel before matching in case the criteria overlap.
+            if (result.matchedUnlessTrigger) {
+                NSString *cancelActionName = [@"__Cancel" stringByAppendingString:actionType];
+                LPActionContext *context = [LPActionContext actionContextWithName:cancelActionName
+                                                                             args:@{}
+                                                                        messageId:messageId];
+                [self triggerAction:context handledBlock:^(BOOL success) {
+                    if (success) {
+                        // Track cancel.
+                        [Leanplum track:@"Cancel" withValue:0.0 andInfo:nil
+                                andArgs:@{LP_PARAM_MESSAGE_ID: messageId} andParameters:nil];
+                    }
+                }];
+            }
+            if (result.matchedTrigger) {
+                [[LPInternalState sharedState].actionManager recordMessageTrigger:internalMessageId];
+                if (result.matchedLimit) {
+                    NSNumber *priority = messageConfig[@"priority"] ?: @(DEFAULT_PRIORITY);
+                    LPActionContext *context = [LPActionContext
+                                                actionContextWithName:actionType
+                                                args:[messageConfig objectForKey:LP_KEY_VARS]
+                                                messageId:internalMessageId
+                                                originalMessageId:messageId
+                                                priority:priority];
+                    context.contextualValues = contextualValues;
+                    [actionContexts addObject:context];
+                }
             }
         }
-    }
 
-    // Return if there are no action to trigger.
-    if ([actionContexts count] == 0) {
-        return;
-    }
-
-    // Sort the action by priority and only show one message.
-    // Make sure to capture the held back.
-    [LPActionContext sortByPriority:actionContexts];
-    NSNumber *priorityThreshold = [((LPActionContext *) [actionContexts firstObject]) priority];
-    NSNumber *countDownThreshold = [self fetchCountDownForContext: (LPActionContext *) [actionContexts firstObject] withMessages:messages];
-    BOOL isPrioritySame = NO;
-    for (LPActionContext *actionContext in actionContexts) {
-        NSNumber *priority = [actionContext priority];
-        if (priority.intValue > priorityThreshold.intValue) {
-            break;
+        // Return if there are no action to trigger.
+        if ([actionContexts count] == 0) {
+            return;
         }
-        if (isPrioritySame) {//priority is same
-            NSNumber *currentCountDown = [self fetchCountDownForContext:actionContext withMessages:messages];
-            //multiple messages have same priority and same countDown, only display one message
-            if (currentCountDown == countDownThreshold) {
+
+        // Sort the action by priority and only show one message.
+        // Make sure to capture the held back.
+        [LPActionContext sortByPriority:actionContexts];
+        NSNumber *priorityThreshold = [((LPActionContext *) [actionContexts firstObject]) priority];
+        NSNumber *countDownThreshold = [self fetchCountDownForContext: (LPActionContext *) [actionContexts firstObject] withMessages:messages];
+        BOOL isPrioritySame = NO;
+        for (LPActionContext *actionContext in actionContexts) {
+            NSNumber *priority = [actionContext priority];
+            if (priority.intValue > priorityThreshold.intValue) {
                 break;
             }
-        }
-        isPrioritySame = YES;
-        if ([[actionContext actionName] isEqualToString:LP_HELD_BACK_ACTION]) {
-            [[LPInternalState sharedState].actionManager
-                 recordHeldBackImpression:[actionContext messageId]
-                        originalMessageId:[actionContext originalMessageId]];
-        } else {
-            [self triggerAction:actionContext handledBlock:^(BOOL success) {
-                if (success) {
-                    [[LPInternalState sharedState].actionManager
-                         recordMessageImpression:[actionContext messageId]];
+            if (isPrioritySame) {//priority is same
+                NSNumber *currentCountDown = [self fetchCountDownForContext:actionContext withMessages:messages];
+                //multiple messages have same priority and same countDown, only display one message
+                if (currentCountDown == countDownThreshold) {
+                    break;
                 }
-            }];
+            }
+            isPrioritySame = YES;
+            if ([[actionContext actionName] isEqualToString:LP_HELD_BACK_ACTION]) {
+                [[LPInternalState sharedState].actionManager
+                 recordHeldBackImpression:[actionContext messageId]
+                 originalMessageId:[actionContext originalMessageId]];
+            } else {
+                [self triggerAction:actionContext handledBlock:^(BOOL success) {
+                    if (success) {
+                        [[LPInternalState sharedState].actionManager
+                         recordMessageImpression:[actionContext messageId]];
+                    }
+                }];
+            }
         }
     }
 }
@@ -1982,15 +1892,10 @@ BOOL inForeground = NO;
 + (void)trackAllAppScreensWithMode:(LPTrackScreenMode)trackScreenMode;
 {
     RETURN_IF_NOOP;
+
     LP_TRY
-    if (![LPInternalState sharedState].isInterfaceEditingEnabled) {
-        LPLog(LPWarning, @"LeanplumUIEditor module is required to track all screens. "
-                         @"Call allowInterfaceEditing before this method.");
-    }
-    
     BOOL stripViewControllerFromState = trackScreenMode == LPTrackScreenModeStripViewController;
     [[LPInternalState sharedState] setStripViewControllerFromState:stripViewControllerFromState];
-    [LPUIEditorWrapper enableAutomaticScreenTracking];
     LP_END_TRY
 }
 
@@ -2106,9 +2011,7 @@ BOOL inForeground = NO;
     
     NSMutableDictionary *arguments = [self makeTrackArgs:eventName withValue:value andInfo:info andArgs:args andParameters:params];
     
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory trackGeofenceWithParams:arguments];
+    LPRequest *request = [LPRequestFactory trackGeofenceWithParams:arguments];
     [[LPRequestSender sharedInstance] sendIfConnected:request];
     LP_END_TRY
 }
@@ -2116,9 +2019,7 @@ BOOL inForeground = NO;
 + (void)trackInternal:(NSString *)event withArgs:(NSDictionary *)args
         andParameters:(NSDictionary *)params
 {
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory trackWithParams:args];
+    LPRequest *request = [LPRequestFactory trackWithParams:args];
     [[LPRequestSender sharedInstance] send:request];
 
     // Perform event actions.
@@ -2240,7 +2141,7 @@ andParameters:(NSDictionary *)params
     // Some clients are calling this method with NSNumber. Handle it gracefully.
     id tempUserId = userId;
     if ([tempUserId isKindOfClass:[NSNumber class]]) {
-        LPLog(LPWarning, @"setUserId is called with NSNumber. Please use NSString.");
+        LPLog(LPInfo, @"setUserId is called with NSNumber. Please use NSString.");
         userId = [tempUserId stringValue];
     }
 
@@ -2249,12 +2150,11 @@ andParameters:(NSDictionary *)params
         attributes = @{};
     }
 
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory setUserAttributesWithParams:@{
+    LPRequest *request = [LPRequestFactory setUserAttributesWithParams:@{
         LP_PARAM_USER_ATTRIBUTES: attributes ? [LPJSON stringFromJSON:attributes] : @"",
-        LP_PARAM_NEW_USER_ID: userId ? userId : @""
-        }];
+        LP_PARAM_USER_ID: [LPAPIConfig sharedConfig].userId ?: @"",
+        LP_PARAM_NEW_USER_ID: userId ?: @""
+    }];
     [[LPRequestSender sharedInstance] send:request];
 
     if (userId.length) {
@@ -2325,9 +2225,7 @@ andParameters:(NSDictionary *)params
 
 + (void)setTrafficSourceInfoInternal:(NSDictionary *)info
 {
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory setTrafficSourceInfoWithParams:@{
+    LPRequest *request = [LPRequestFactory setTrafficSourceInfoWithParams:@{
         LP_PARAM_TRAFFIC_SOURCE: info
         }];
     [[LPRequestSender sharedInstance] send:request];
@@ -2382,9 +2280,7 @@ andParameters:(NSDictionary *)params
 + (void)advanceToInternal:(NSString *)state withArgs:(NSDictionary *)args
             andParameters:(NSDictionary *)params
 {
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory advanceWithParams:args];
+    LPRequest *request = [LPRequestFactory advanceWithParams:args];
     [[LPRequestSender sharedInstance] send:request];
     LPContextualValues *contextualValues = [[LPContextualValues alloc] init];
     contextualValues.parameters = params;
@@ -2411,9 +2307,7 @@ andParameters:(NSDictionary *)params
 
 + (void)pauseStateInternal
 {
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory pauseStateWithParams:@{}];
+    LPRequest *request = [LPRequestFactory pauseStateWithParams:@{}];
     [[LPRequestSender sharedInstance] send:request];
 }
 
@@ -2433,9 +2327,7 @@ andParameters:(NSDictionary *)params
 
 + (void)resumeStateInternal
 {
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory resumeStateWithParams:@{}];
+    LPRequest *request = [LPRequestFactory resumeStateWithParams:@{}];
     [[LPRequestSender sharedInstance] send:request];
 }
 
@@ -2464,15 +2356,11 @@ andParameters:(NSDictionary *)params
         params[LP_PARAM_INCLUDE_VARIANT_DEBUG_INFO] = @(YES);
     }
 
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory getVarsWithParams:params];
+    LPRequest *request = [LPRequestFactory getVarsWithParams:params];
     [request onResponse:^(id<LPNetworkOperationProtocol> operation, NSDictionary *response) {
         LP_TRY
         NSDictionary *values = response[LP_KEY_VARS];
         NSDictionary *messages = response[LP_KEY_MESSAGES];
-        NSArray *updateRules = response[LP_KEY_UPDATE_RULES];
-        NSArray *eventRules = response[LP_KEY_EVENT_RULES];
         NSArray *variants = response[LP_KEY_VARIANTS];
         NSDictionary *regions = response[LP_KEY_REGIONS];
         NSDictionary *variantDebugInfo = [self parseVariantDebugInfoFromResponse:response];
@@ -2482,14 +2370,10 @@ andParameters:(NSDictionary *)params
 
         if (![values isEqualToDictionary:[LPVarCache sharedCache].diffs] ||
             ![messages isEqualToDictionary:[LPVarCache sharedCache].messageDiffs] ||
-            ![updateRules isEqualToArray:[LPVarCache sharedCache].updateRulesDiffs] ||
-            ![eventRules isEqualToArray:[LPVarCache sharedCache].eventRulesDiffs] ||
             ![variants isEqualToArray:[LPVarCache sharedCache].variants] ||
             ![regions isEqualToDictionary:[LPVarCache sharedCache].regions]) {
             [[LPVarCache sharedCache] applyVariableDiffs:values
                                   messages:messages
-                               updateRules:updateRules
-                                eventRules:eventRules
                                   variants:variants
                                    regions:regions
                           variantDebugInfo:variantDebugInfo];
@@ -2685,90 +2569,6 @@ void leanplumExceptionHandler(NSException *exception)
     return nil;
 }
 
-+ (LPNewsfeed *)newsfeed
-{
-    LP_TRY
-    return [LPNewsfeed sharedState];
-    LP_END_TRY
-    return nil;
-}
-
-void LPLog(LPLogType type, NSString *format, ...) {
-    va_list vargs;
-    va_start(vargs, format);
-    NSString *formattedMessage = [[NSString alloc] initWithFormat:format arguments:vargs];
-    va_end(vargs);
-
-    NSString *message;
-    switch (type) {
-        case LPDebug:
-#ifdef DEBUG
-            message = [NSString stringWithFormat:@"Leanplum DEBUG: %@", formattedMessage];
-            printf("%s\n", [message UTF8String]);
-#endif
-            return;
-        case LPVerbose:
-            if ([LPConstantsState sharedState].isDevelopmentModeEnabled
-                && [LPConstantsState sharedState].verboseLoggingInDevelopmentMode) {
-                message = [NSString stringWithFormat:@"Leanplum VERBOSE: %@", formattedMessage];
-                printf("%s\n", [message UTF8String]);
-                [Leanplum maybeSendLog:message];
-            }
-            return;
-        case LPError:
-            message = [NSString stringWithFormat:@"Leanplum ERROR: %@", formattedMessage];
-            printf("%s\n", [message UTF8String]);
-            [Leanplum maybeSendLog:message];
-            return;
-        case LPWarning:
-            message = [NSString stringWithFormat:@"Leanplum WARNING: %@", formattedMessage];
-            printf("%s\n", [message UTF8String]);
-            [Leanplum maybeSendLog:message];
-            return;
-        case LPInfo:
-            message = [NSString stringWithFormat:@"Leanplum INFO: %@", formattedMessage];
-            printf("%s\n", [message UTF8String]);
-            [Leanplum maybeSendLog:message];
-            return;
-        case LPInternal:
-            message = [NSString stringWithFormat:@"Leanplum INTERNAL: %@", formattedMessage];
-            [Leanplum maybeSendLog:message];
-            return;
-        default:
-            return;
-    }
-}
-
-+ (void)maybeSendLog:(NSString *)message {
-    if (![LPConstantsState sharedState].loggingEnabled) {
-        return;
-    }
-
-    NSMutableDictionary *threadDict = [[NSThread currentThread] threadDictionary];
-    BOOL isLogging = [[[[NSThread currentThread] threadDictionary]
-                       objectForKey:LP_IS_LOGGING] boolValue];
-
-    if (isLogging) {
-        return;
-    }
-
-    threadDict[LP_IS_LOGGING] = @YES;
-
-    @try {
-        LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                        initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-        id<LPRequesting> request = [reqFactory logWithParams:@{
-                                                      LP_PARAM_TYPE: LP_VALUE_SDK_LOG,
-                                                      LP_PARAM_MESSAGE: message
-                                                      }];
-                [[LPRequestSender sharedInstance] sendEventually:request sync:NO];
-    } @catch (NSException *exception) {
-        NSLog(@"Leanplum: Unable to send log: %@", exception);
-    } @finally {
-        [threadDict removeObjectForKey:LP_IS_LOGGING];
-    }
-}
-
 /**
  * Returns the name of LPLocationAccuracyType.
  */
@@ -2817,14 +2617,18 @@ void LPLog(LPLogType type, NSString *format, ...) {
     LP_TRY
     if ([LPConstantsState sharedState].isLocationCollectionEnabled &&
         NSClassFromString(@"LPLocationManager")) {
-        LPLog(LPWarning, @"Leanplum is automatically collecting device location, "
+        LPLog(LPInfo, @"Leanplum is automatically collecting device location, "
               "so there is no need to call setDeviceLocation. If you prefer to "
               "always set location manually, then call disableLocationCollection:.");
     }
 
-    [self setUserLocationAttributeWithLatitude:latitude longitude:longitude
-                                          city:city region:region country:country
-                                          type:type responseHandler:nil];
+    [self setUserLocationAttributeWithLatitude:latitude
+                                     longitude:longitude
+                                          city:city
+                                        region:region
+                                       country:country
+                                          type:type
+                               responseHandler:nil];
     LP_END_TRY
 }
 
@@ -2851,9 +2655,7 @@ void LPLog(LPLogType type, NSString *format, ...) {
         params[LP_KEY_COUNTRY] = country;
     }
 
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory setUserAttributesWithParams:params];
+    LPRequest *request = [LPRequestFactory setUserAttributesWithParams:params];
     [request onResponse:^(id<LPNetworkOperationProtocol> operation, id json) {
         if (response) {
             response(YES);

@@ -24,12 +24,10 @@
 
 #import "LeanplumSocket.h"
 #import "LeanplumInternal.h"
-#import "LeanplumRequest.h"
 #import "LPConstants.h"
 #import "LPVarCache.h"
 #import "LPActionManager.h"
 #import "LPUIAlert.h"
-#import "LPUIEditorWrapper.h"
 #import "LPAPIConfig.h"
 #import "LPCountAggregator.h"
 
@@ -121,7 +119,7 @@ static dispatch_once_t leanplum_onceToken;
 - (void)socketIODidConnect:(Leanplum_SocketIO *)socket
 {
     if (!_authSent) {
-        NSLog(@"Leanplum: Connected to development server");
+        LPLog(LPInfo, @"Connected to development server");
         NSDictionary *dict = @{
             LP_PARAM_APP_ID: _appId,
             LP_PARAM_DEVICE_ID: _deviceId
@@ -134,7 +132,7 @@ static dispatch_once_t leanplum_onceToken;
 
 -(void)socketIODidDisconnect:(Leanplum_SocketIO *)socketIO
 {
-    NSLog(@"Leanplum: Disconnected from development server");
+    LPLog(LPInfo, @"Disconnected from development server");
     _connected = NO;
     _authSent = NO;
 }
@@ -177,33 +175,6 @@ static dispatch_once_t leanplum_onceToken;
         [[LPVarCache sharedCache] maybeUploadNewFiles];
         [self sendEvent:@"getContentResponse" withData:@{@"updated": @(sentValues)}];
 
-    } else if ([packet.name isEqualToString:@"getViewHierarchy"]) {
-        [LPUIEditorWrapper startUpdating];
-        [LPUIEditorWrapper sendUpdate];
-    } else if ([packet.name isEqualToString:@"previewUpdateRules"]) {
-        NSDictionary *packetData = packet.dataAsJSON[@"args"][0];
-        if ([packetData[@"closed"] boolValue]) {
-            [LPUIEditorWrapper stopUpdating];
-        } else {
-            [LPUIEditorWrapper startUpdating];
-        }
-        if (packetData[@"mode"]) {
-            NSInteger mode = [packetData[@"mode"] integerValue];
-            if (mode != 0 && mode != 1) {
-                NSLog(@"Leanplum: Invalid LPEditor mode in packet.");
-            }
-            [LPUIEditorWrapper setMode:mode];
-        }
-        BOOL wasEnabled = [UIView areAnimationsEnabled];
-        [UIView setAnimationsEnabled:NO];
-        [[LPVarCache sharedCache] applyUpdateRuleDiffs:packetData[@"rules"]];
-        
-        dispatch_time_t changeTime = dispatch_time(DISPATCH_TIME_NOW, LP_EDITOR_REDRAW_DELAY
-                                                   * NSEC_PER_SEC);
-        dispatch_after(changeTime, dispatch_get_main_queue(), ^(void) {
-            [UIView setAnimationsEnabled:wasEnabled];
-        });
-        [LPUIEditorWrapper sendUpdateDelayed];
     } else if ([packet.name isEqualToString:@"registerDevice"]) {
         NSDictionary *packetData = packet.dataAsJSON[@"args"][0];
         NSString *email = packetData[@"email"];
@@ -215,8 +186,11 @@ static dispatch_once_t leanplum_onceToken;
                            block:nil];
     } else if ([packet.name isEqualToString:@"applyVars"]) {
         NSDictionary *packetData = packet.dataAsJSON[@"args"][0];
-        [[LPVarCache sharedCache] applyVariableDiffs:packetData messages:nil updateRules:nil eventRules:nil
-                              variants:nil regions:nil variantDebugInfo:nil];
+        [[LPVarCache sharedCache] applyVariableDiffs:packetData
+                                            messages:nil
+                                            variants:nil
+                                             regions:nil
+                                    variantDebugInfo:nil];
     }
     LP_END_TRY
 }

@@ -50,15 +50,13 @@
 
 - (void)showError:(NSString *)message
 {
-    NSLog(@"Leanplum: Device registration error: %@", message);
+    LPLog(LPError, @"Device registration error: %@", message);
     self.callback(NO);
 }
 
 - (void)registerDevice:(NSString *)email
 {
-    LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                    initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-    id<LPRequesting> request = [reqFactory registerDeviceWithParams:@{ LP_PARAM_EMAIL: email }];
+    LPRequest *request = [LPRequestFactory registerDeviceWithParams:@{ LP_PARAM_EMAIL: email }];
     [request onResponse:^(id<LPNetworkOperationProtocol> operation, NSDictionary *response) {
         LP_TRY
         BOOL isSuccess = [LPResponse isResponseSuccess:response];

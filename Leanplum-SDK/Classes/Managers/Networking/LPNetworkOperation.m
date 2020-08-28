@@ -77,7 +77,7 @@
 - (NSInteger)HTTPStatusCode
 {
     if (!self.response) {
-        LPLog(LPWarning, @"No response from %@. Make sure to call in the callback",
+        LPLog(LPInfo, @"No response from %@. Make sure to call in the callback",
               self.request.URL.absoluteString);
         return 0;
     }
@@ -92,7 +92,7 @@
 - (id)responseJSON
 {
     if (!self.dataFromResponse) {
-        LPLog(LPWarning, @"No response data from %@. Make sure to call in the callback",
+        LPLog(LPInfo, @"No response data from %@. Make sure to call in the callback",
               self.request.URL.absoluteString);
         return @{};
     }
@@ -102,7 +102,7 @@
 - (NSData *)responseData
 {
     if (!self.dataFromResponse) {
-        LPLog(LPWarning, @"No response data from %@. Make sure to call in the callback",
+        LPLog(LPInfo, @"No response data from %@. Make sure to call in the callback",
               self.request.URL.absoluteString);
     }
     return self.dataFromResponse;
@@ -111,7 +111,7 @@
 - (NSString *)responseString
 {
     if (!self.dataFromResponse) {
-        LPLog(LPWarning, @"No response data from %@. Make sure to call in the callback",
+        LPLog(LPInfo, @"No response data from %@. Make sure to call in the callback",
               self.request.URL.absoluteString);
         return @"";
     }
@@ -199,14 +199,14 @@
     // Use Upload Task for file & data upload, Data Task for others
     self.request.HTTPBody = [self bodyData];
     if (self.requestFiles.count || self.requestDatas.count) {
-        self.task = [self.session uploadTaskWithRequest:self.request fromData:nil completionHandler:
-                     ^(NSData * _Nullable data, NSURLResponse * _Nullable response,
-                       NSError * _Nullable error) {
+        self.task = [self.session uploadTaskWithRequest:self.request
+                                               fromData:nil
+                                      completionHandler:^(NSData * data, NSURLResponse * response, NSError * error) {
             responseBlock(data, response, error);
         }];
     } else {
-        self.task = [self.session dataTaskWithRequest:self.request completionHandler:
-                     ^(NSData *data, NSURLResponse *response, NSError *error) {
+        self.task = [self.session dataTaskWithRequest:self.request
+                                    completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             responseBlock(data, response, error);
         }];
     }
@@ -308,11 +308,10 @@
  */
 - (NSString *)urlEncodedString:(NSString *)string
 {
-    CFStringRef encodedCFString = CFURLCreateStringByAddingPercentEscapes
-            (kCFAllocatorDefault, (__bridge CFStringRef) string, nil,
-             CFSTR("?!@#$^&%*+,:;='\"`<>()[]{}/\\| "), kCFStringEncodingUTF8);
-    NSString *encodedString = [[NSString alloc] initWithString:
-                               (__bridge_transfer NSString*) encodedCFString];
+    NSMutableCharacterSet *allowed = [[NSMutableCharacterSet alloc] init];
+    [allowed addCharactersInString:@"?!@#$^&%*+,:;='\"`<>()[]{}/\\| "];
+    [allowed invert];
+    NSString *encodedString = [string stringByAddingPercentEncodingWithAllowedCharacters:allowed];
     if (!encodedString) {
         encodedString = @"";
     }

@@ -181,6 +181,12 @@ typedef void (^LPFileCallback)(NSString* value, NSString *defaultValue);
     return _name;
 }
 
+- (NSDictionary *)args
+{
+    [self setProperArgs];
+    return [_args copy];
+}
+
 - (void)setProperArgs
 {
     if (!_preventRealtimeUpdating && [[LPVarCache sharedCache] contentVersion] > _contentVersion) {
@@ -268,8 +274,7 @@ typedef void (^LPFileCallback)(NSString* value, NSString *defaultValue);
                 NSString *filePath = [LPFileManager fileValue:obj withDefaultValue:@""];
                 NSString *prunedKey = [key stringByReplacingOccurrencesOfString:@"__file__"
                                                                      withString:@""];
-                vars[prunedKey] = [[NSString stringWithFormat:@"file://%@", filePath]
-                                   stringByAddingPercentEscapesUsingEncoding:NSASCIIStringEncoding];
+                vars[prunedKey] = [self asciiEncodedFileURL:filePath];
                 [vars removeObjectForKey:key];
             }
         }
@@ -288,14 +293,21 @@ typedef void (^LPFileCallback)(NSString* value, NSString *defaultValue);
     jsonString = [jsonString stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
 
     // Template.
-    NSError *error;
-    NSString *htmlString = [NSString stringWithContentsOfFile:[self fileNamed:templateName]
-                                                     encoding:NSUTF8StringEncoding
-                                                        error:&error];
-    if (error) {
+    NSString *htmlString = [self htmlStringContentsOfFile:[self fileNamed:templateName]];
+    if (!htmlString) {
         LPLog(LPError, @"Fail to get HTML template.");
         return nil;
     }
+
+    if ([[htmlVars valueForKey:@"Height"] isEqualToString:@"100%"] && [[htmlVars valueForKey:@"Width"] isEqualToString:@"100%"]) {
+        htmlString = [htmlString stringByReplacingOccurrencesOfString:@"/*##MEDIAQUERY##" withString:@""];
+        htmlString = [htmlString stringByReplacingOccurrencesOfString:@"##MEDIAQUERY##*/" withString:@""];
+    }
+    
+    htmlString = [htmlString stringByReplacingOccurrencesOfString:@"/*##BANNER_MEDIAQUERY##" withString:@""];
+    htmlString = [htmlString stringByReplacingOccurrencesOfString:@"##BANNER_MEDIAQUERY##*/" withString:@""];
+    
+    
     htmlString = [htmlString stringByReplacingOccurrencesOfString:@"##Vars##"
                                                        withString:jsonString];
 
@@ -311,6 +323,25 @@ typedef void (^LPFileCallback)(NSString* value, NSString *defaultValue);
     return tmpURL;
     LP_END_TRY
     return nil;
+}
+
+-(NSString *)asciiEncodedFileURL:(NSString *)filePath {
+    NSMutableCharacterSet *allowed = [NSMutableCharacterSet illegalCharacterSet];
+    [allowed formUnionWithCharacterSet:[NSMutableCharacterSet controlCharacterSet]];
+    [allowed invert];
+    return [[NSString stringWithFormat:@"file://%@", filePath] stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+}
+
+-(NSString *)htmlStringContentsOfFile:(NSString *)file {
+    NSError *error;
+    NSString *htmlString = [NSString stringWithContentsOfFile:file
+                                                     encoding:NSUTF8StringEncoding
+                                                        error:&error];
+    if (error) {
+        LPLog(LPError, @"Fail to get HTML template. Error: %@", [error description]);
+        return nil;
+    }
+    return htmlString;
 }
 
 - (NSString *)getDefaultValue:(NSString *)name

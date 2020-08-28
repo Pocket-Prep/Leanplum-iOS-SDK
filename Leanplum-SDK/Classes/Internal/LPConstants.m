@@ -79,8 +79,6 @@ NSString *LEANPLUM_DEFAULTS_ITEM_KEY = @"__leanplum_unsynced_%d";
 NSString *LEANPLUM_DEFAULTS_VARIABLES_KEY = @"__leanplum_variables";
 NSString *LEANPLUM_DEFAULTS_ATTRIBUTES_KEY = @"__leanplum_attributes";
 NSString *LEANPLUM_DEFAULTS_MESSAGES_KEY = @"__leanplum_messages";
-NSString *LEANPLUM_DEFAULTS_UPDATE_RULES_KEY = @"__leanplum_interface_rules";
-NSString *LEANPLUM_DEFAULTS_EVENT_RULES_KEY = @"__leanplum_interface_events";
 NSString *LEANPLUM_DEFAULTS_TOKEN_KEY = @"__leanplum_token";
 NSString *LEANPLUM_DEFAULTS_MESSAGE_TRIGGER_OCCURRENCES_KEY = @"__leanplum_message_trigger_occurrences_%@";
 NSString *LEANPLUM_DEFAULTS_MESSAGE_IMPRESSION_OCCURRENCES_KEY = @"__leanplum_message_occurrences_%@";
@@ -95,11 +93,6 @@ NSString *LEANPLUM_DEFAULTS_APP_VERSION_KEY = @"leanplum_savedAppVersionKey";
 NSString *LEANPLUM_DEFAULTS_UUID_KEY = @"__leanplum_uuid";
 
 NSString *LEANPLUM_SQLITE_NAME = @"__leanplum.sqlite";
-
-NSString *LP_METHOD_GET_VARS = @"getVars";
-NSString *LP_METHOD_MULTI = @"multi";
-NSString *LP_METHOD_UPLOAD_FILE = @"uploadFile";
-NSString *LP_METHOD_LOG = @"log";
 
 NSString *LP_PARAM_ACTION = @"action";
 NSString *LP_PARAM_ACTION_DEFINITIONS = @"actionDefinitions";
@@ -148,7 +141,6 @@ NSString *LP_PARAM_LIMIT_TRACKING = @"limitTracking";
 NSString *LP_PARAM_NAME = @"name";
 NSString *LP_PARAM_MESSAGE = @"message";
 NSString *LP_PARAM_MESSAGE_ID = @"messageId";
-NSString *LP_PARAM_BACKGROUND = @"background";
 NSString *LP_PARAM_INBOX_MESSAGES = @"newsfeedMessages";
 NSString *LP_PARAM_INBOX_MESSAGE_ID = @"newsfeedMessageId";
 NSString *LP_PARAM_RICH_PUSH_ENABLED = @"richPushEnabled";
@@ -160,8 +152,6 @@ NSString *LP_KEY_STACK_TRACE = @"stackTrace";
 NSString *LP_KEY_USER_INFO = @"userInfo";
 NSString *LP_KEY_VARS = @"vars";
 NSString *LP_KEY_MESSAGES = @"messages";
-NSString *LP_KEY_UPDATE_RULES = @"interfaceRules";
-NSString *LP_KEY_EVENT_RULES = @"interfaceEvents";
 NSString *LP_KEY_VARS_FROM_CODE = @"varsFromCode";
 NSString *LP_KEY_IS_REGISTERED = @"isRegistered";
 NSString *LP_KEY_IS_REGISTERED_FROM_OTHER_APP = @"isRegisteredFromOtherApp";
@@ -178,12 +168,6 @@ NSString *LP_KEY_CITY = @"city";
 NSString *LP_KEY_LOCATION = @"location";
 NSString *LP_KEY_LOCATION_ACCURACY_TYPE = @"locationAccuracyType";
 NSString *LP_KEY_TOKEN = @"token";
-NSString *LP_KEY_PUSH_MESSAGE_ID = @"_lpm";
-NSString *LP_KEY_PUSH_MUTE_IN_APP = @"_lpu";
-NSString *LP_KEY_PUSH_NO_ACTION = @"_lpn";
-NSString *LP_KEY_PUSH_NO_ACTION_MUTE = @"_lpv";
-NSString *LP_KEY_PUSH_ACTION = @"_lpx";
-NSString *LP_KEY_PUSH_CUSTOM_ACTIONS = @"_lpc";
 NSString *LP_KEY_REGIONS = @"regions";
 NSString *LP_KEY_UPLOAD_URL = @"uploadUrl";
 NSString *LP_KEY_VARIANTS = @"variants";
@@ -229,7 +213,6 @@ NSString *LP_VALUE_DEFAULT_PUSH_ACTION = @"Open action";
 NSString *LP_VALUE_DEFAULT_PUSH_MESSAGE = @"Push message goes here.";
 NSString *LP_VALUE_SDK_LOG = @"sdkLog";
 NSString *LP_VALUE_SDK_COUNT = @"sdkCount";
-NSString *LP_VALUE_SDK_ERROR = @"sdkError";
 NSString *LP_VALUE_SDK_START_LATENCY = @"sdkStartLatency";
 
 NSString *LP_KEYCHAIN_SERVICE_NAME = @"com.leanplum.storage";
@@ -275,49 +258,4 @@ void leanplumIncrementUserCodeBlock(int delta)
 {
     NSMutableDictionary *threadDict = [[NSThread currentThread] threadDictionary];
     threadDict[LP_USER_CODE_BLOCKS] = @([threadDict[LP_USER_CODE_BLOCKS] intValue] + delta);
-}
-
-void leanplumInternalError(NSException *e)
-{
-    [LPUtils handleException:e];
-    if ([e.name isEqualToString:@"Leanplum Error"]) {
-        @throw e;
-    }
-    
-    for (id symbol in [e callStackSymbols]) {
-        NSString *description = [symbol description];
-        if ([description rangeOfString:@"+[Leanplum trigger"].location != NSNotFound
-            || [description rangeOfString:@"+[Leanplum throw"].location != NSNotFound
-            || [description rangeOfString:@"-[LPVar trigger"].location != NSNotFound
-            || [description rangeOfString:@"+[Leanplum setApiHostName"].location != NSNotFound) {
-            @throw e;
-        }
-    }
-    NSString *versionName = [[[NSBundle mainBundle] infoDictionary]
-                             objectForKey:@"CFBundleVersion"];
-    if (!versionName) {
-        versionName = @"";
-    }
-    int userCodeBlocks = [[[[NSThread currentThread] threadDictionary]
-                           objectForKey:LP_USER_CODE_BLOCKS] intValue];
-    if (userCodeBlocks <= 0) {
-        @try {
-            LPRequestFactory *reqFactory = [[LPRequestFactory alloc]
-                                            initWithFeatureFlagManager:[LPFeatureFlagManager sharedManager]];
-            id<LPRequesting> request = [reqFactory logWithParams:@{
-                                     LP_PARAM_TYPE: LP_VALUE_SDK_ERROR,
-                                     LP_PARAM_MESSAGE: [e description],
-                                     @"stackTrace": [[e callStackSymbols] description] ?: @"",
-                                     LP_PARAM_VERSION_NAME: versionName
-                                     }];
-            [[LPRequestSender sharedInstance] send:request];
-        } @catch (NSException *e) {
-            // This empty try/catch is needed to prevent crash <-> loop.
-        }
-        NSLog(@"Leanplum: INTERNAL ERROR: %@\n%@", e, [e callStackSymbols]);
-    } else {
-        NSLog(@"Leanplum: Caught exception in callback code: %@\n%@", e, [e callStackSymbols]);
-        LP_END_USER_CODE
-        @throw e;
-    }
 }
